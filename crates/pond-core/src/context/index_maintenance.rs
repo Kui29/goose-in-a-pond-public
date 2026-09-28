@@ -203,9 +203,7 @@ pub async fn run_index_maintenance(
         .await;
     }
 
-    // 3. Orphans. Deliberately AFTER the writes: pruning first would delete rows
-    //    that step 1 is about to legitimately re-create, doing the same work
-    //    twice on every pass.
+    // 3. Orphans, after the writes: pruning first deletes rows step 1 would re-create.
     if !cancel.is_cancelled() {
         match index.prune_orphans().await {
             Ok(n) => report.orphans_pruned = n,

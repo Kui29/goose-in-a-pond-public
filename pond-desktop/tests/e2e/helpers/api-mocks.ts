@@ -313,7 +313,6 @@ export async function mockAllApiRoutes(page: Page): Promise<void> {
     route.fulfill({ json: { lane: true, job: "titling", woken: true } }),
   );
 
-  // Skills
   await page.route("**/api/v1/skills", (route) =>
     route.fulfill({ json: [] }),
   );

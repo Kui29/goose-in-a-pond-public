@@ -580,14 +580,7 @@ describe("chatStream()", () => {
     }
   });
 
-  /**
-   * The server's SSE handler holds one of four `sse_semaphore` permits and an
-   * `AttachGuard` for as long as the response body is open. `releaseLock()`
-   * alone does not close it, so an abandoned turn kept both — measured against
-   * a live pond, four abandoned streams made every later send return
-   * `503 Too many concurrent streams` in under 2 ms, until the browser
-   * happened to garbage-collect the Response.
-   */
+  /** An open body holds one of four server SSE permits; `releaseLock()` alone does not close it. */
   it("cancels the body when the consumer walks away mid-stream", async () => {
     const encoder = new TextEncoder();
     let cancelled: unknown = "not cancelled";

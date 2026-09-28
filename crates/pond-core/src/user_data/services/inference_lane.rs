@@ -655,9 +655,6 @@ mod tests {
         assert_eq!(tick(&starved), LaneDecision::Run(LaneJob::MemoryExtraction));
     }
 
-    /// The index sweep is a lane citizen like any other, and the property that
-    /// matters most is the one it would have broken by keeping its own loop:
-    /// it cannot run while another job holds the slot.
     #[test]
     fn the_index_sweep_cannot_run_beside_another_job() {
         // Starved far longer than the other, so it wins the tick outright...

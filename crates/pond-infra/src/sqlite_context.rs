@@ -1298,8 +1298,6 @@ mod tests {
         );
     }
 
-    /// Every install after the first is an upgrade: applying the migrations to a
-    /// database that already has rows must work, and must not disturb them.
     #[tokio::test]
     async fn the_migrations_apply_to_a_database_that_already_has_rows() {
         let tmp = tempfile::tempdir().unwrap();

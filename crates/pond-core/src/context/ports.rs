@@ -80,10 +80,7 @@ pub trait ContextRepository: Send + Sync {
         to: DateTime<Utc>,
     ) -> Result<u64>;
 
-    /// What each source has contributed, and how much of it is searchable.
-    ///
-    /// One query for all sources, not one per source. Defaults to empty so an adapter without it
-    /// reports "nothing known" rather than failing the whole sources list.
+    /// Per-source counts in one query. Defaulted: empty beats failing the whole sources list.
     async fn item_stats_by_source(&self) -> Result<Vec<SourceItemStats>> {
         Ok(Vec::new())
     }

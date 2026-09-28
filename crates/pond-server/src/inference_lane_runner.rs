@@ -314,19 +314,8 @@ impl InferenceLane {
         }
     }
 
-    /// Ask for the inference slot on behalf of `job`.
-    ///
-    /// `Some` means this job won the tick and now holds the slot until the
-    /// guard is dropped. `None` means either the shared
-    /// gate refused every job (the household is mid-conversation, or nothing has
-    /// happened since boot), another job was more starved, or another job is
-    /// mid-run right now.
-    ///
-    /// The last of those is why this uses `try_lock` rather than waiting: a job
-    /// that queued for the slot would run *after* the conditions that qualified
-    /// it had passed — the household could be back, and the whole point of the
-    /// idle gate is that background work yields to people. Missing a pass is
-    /// correct; the next tick is a minute away.
+    /// The slot for `job` if it wins this tick, else `None`. Uses `try_lock`, not a wait: a
+    /// queued job would run after the idle conditions that qualified it had passed.
     pub async fn acquire(
         &self,
         job: LaneJob,
@@ -811,7 +800,6 @@ mod tests {
     const LONG_IDLE: Duration = Duration::from_secs(3600);
 
     // ── Standing down without leaving a hole ─────────────────────────────
-
     /// A job that has something to say "not now" about must still ASK.
     ///
     /// This is the invariant every lane loop keeps by construction and the
@@ -921,7 +909,6 @@ mod tests {
     }
 
     // ── The durable clock ────────────────────────────────────────────────
-
     /// The clock is wall time now, so both directions of skew are reachable.
     #[test]
     fn a_clock_that_went_backwards_reads_as_just_ran_not_as_a_long_wait() {
@@ -1153,7 +1140,6 @@ mod tests {
     }
 
     // ── Running a job by hand ────────────────────────────────────────────
-
     /// Which gates a tick waives, by where it came from.
     ///
     /// The scheduled bell buys an EARLY LOOK and nothing else: it applies every
@@ -1599,8 +1585,7 @@ mod tests {
         );
     }
 
-    /// `false` for the exemption: these tests are about the shared gate and the
-    /// tie-break between jobs, both of which an exempt job skips entirely.
+    /// Not exempt: these tests cover the shared gate and tie-break, which exempt jobs skip.
     async fn ask(lane: &InferenceLane, job: LaneJob) -> Option<LaneSlot<'_>> {
         lane.acquire(
             job,

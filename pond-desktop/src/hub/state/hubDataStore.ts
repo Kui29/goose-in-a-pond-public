@@ -406,7 +406,6 @@ function setNowPlayingBackoff(np: NowPlayingApiResponse | null): void {
   fourXxRun = 0;
 }
 
-
 function nowPlayingFromApi(np: NowPlayingApiResponse | null): NowPlayingData {
   if (!np || !np.connected) {
     // Not the mock track with `connected` flipped: that put "Weightless /
@@ -423,9 +422,7 @@ function nowPlayingFromApi(np: NowPlayingApiResponse | null): NowPlayingData {
       durationMs: null,
     };
   }
-  // Spotify answered but refused the request. This is NOT "nothing playing" —
-  // the account is linked, so silently showing an idle player hides a problem
-  // the user has to act on (and the transport controls would fail too).
+  // Spotify refused: show that, not an idle player, since the user has to act on it.
   if (np.error) {
     return {
       track: np.error === "forbidden" ? "Spotify not authorised" : "Spotify unavailable",

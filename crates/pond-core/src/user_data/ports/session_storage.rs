@@ -268,16 +268,8 @@ pub trait SessionStorage: Send + Sync {
         Ok(true)
     }
 
-    /// The tool GROUPS (MCP extension names) selected for this session, if any.
-    ///
-    /// Phase D2 chooses a session's tool surface once, from its opening message,
-    /// and keeps it stable so the local engine's KV prompt prefix stays reusable
-    /// across turns. Persisting it matters for one specific reason: the model can
-    /// widen its own surface mid-session via `enable_tool_group`, and a
-    /// process-local record would silently drop that capability on the next
-    /// restart, mid-conversation, with no way for the user to tell why.
-    ///
-    /// `None` means "not chosen yet" — the caller selects and stores.
+    /// Tool groups (MCP extension names) fixed per session so the KV prompt prefix stays reusable.
+    /// Persisted so `enable_tool_group` widening survives restarts; `None` = not chosen yet.
     async fn get_session_tool_groups(
         &self,
         _session_id: &str,
@@ -367,7 +359,6 @@ pub trait SessionStorage: Send + Sync {
     // override reads as "never examined" and silently discards every write, so
     // the batch engine re-walks the same window forever rather than advancing
     // past conversations it never read. Wasteful, never wrong.
-
     /// How far batch memory extraction has read into this conversation.
     async fn extraction_cursor(
         &self,
@@ -414,16 +405,7 @@ pub trait SessionStorage: Send + Sync {
         Ok(0)
     }
 
-    /// Delete `message_id` and every later message in the same session (by
-    /// insertion order).
-    ///
-    /// Backs "edit" and "refresh" on a user message: the caller truncates
-    /// from that message onward, then resubmits the (same or edited) text as
-    /// a normal new turn through the existing chat endpoint — no separate
-    /// regenerate code path needed.
-    ///
-    /// The default is a no-op error so adapters that predate this feature
-    /// keep compiling; the SQLite adapter is the real implementation.
+    /// Delete `message_id` and every later message (insertion order), for edit/refresh resubmits.
     async fn delete_messages_from(
         &self,
         _session_id: &str,

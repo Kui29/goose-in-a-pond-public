@@ -40,7 +40,6 @@ const MODE_POLL: Duration = Duration::from_secs(5);
 const PROGRESS_STEP: u64 = 1024 * 1024;
 
 // ── Paths ───────────────────────────────────────────────────────────────────
-
 /// The encoder file for `spec` under this pond, as it is actually spelled on disk.
 ///
 /// The canonical path is lowercase (the Orin's ext4 is case-sensitive). An existing directory
@@ -78,7 +77,6 @@ pub fn chat_gguf_path(data_dir: &Path, chat_model: &str) -> PathBuf {
 }
 
 // ── Declaration ─────────────────────────────────────────────────────────────
-
 /// Whether `chat_model` reads pictures on this device.
 ///
 /// DECLARED, never downloaded: this feeds the `<vision>` prompt section, which sits in the
@@ -122,7 +120,6 @@ fn now_ms() -> u64 {
 }
 
 // ── The warm-up gate ────────────────────────────────────────────────────────
-
 /// Lets a budgeted device's companion worker wait out the model load.
 ///
 /// Waits for "a warm-up has finished and none is running", not "none is running": at boot the

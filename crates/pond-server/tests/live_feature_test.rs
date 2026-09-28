@@ -94,7 +94,6 @@ async fn build_provider() -> Option<Arc<dyn LlmProvider>> {
 // five GGUF families to the device's one. Point `GIAP_OLLAMA_MODEL` at each in
 // turn: a prompt that only one family obeys is a prompt that will fail on the
 // Orin at three in the morning with nobody watching.
-
 fn window(user: &str, assistant: &str, at: DateTime<Utc>) -> Vec<WindowMessage> {
     vec![
         WindowMessage {

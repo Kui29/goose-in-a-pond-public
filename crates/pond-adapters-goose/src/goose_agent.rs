@@ -69,16 +69,7 @@ const GOOSE_EMPTY_TURN_MESSAGE: &str =
 /// screen GIAP does not have. Canary: `goose_still_prefixes_a_provider_error_the_same_way`.
 const GOOSE_PROVIDER_ERROR_PREFIX: &str = "Ran into this error: ";
 
-/// The prefix of the notification goose emits each time it re-arms the
-/// completeness check.
-///
-/// Goose yields `SystemNotification(InlineMessage, "Goal: {goal}")` every time
-/// the check re-arms (`agents/agent.rs`, the goal-nudge arm). GIAP has always
-/// received that content and dropped it on the floor -- it is not text, so
-/// `as_concat_text()` is empty and nothing downstream sees it. Counting it is
-/// how the loop below observes the check directly rather than guessing at it
-/// from repeated arguments. Matched verbatim, like [`GOOSE_MAX_TURNS_MESSAGE`],
-/// with a canary test so a fork sync that reworded it fails loudly.
+/// Verbatim prefix of goose's notification each time its completeness check re-arms.
 const GOOSE_GOAL_NOTIFICATION_PREFIX: &str = "Goal: ";
 
 /// Max completeness-check re-arms per turn; bounds tool-call loops.
@@ -441,8 +432,7 @@ impl GooseAdapter {
         // let _ = self.self_handle.set(Arc::downgrade(self));
     }
 
-    /// Enable voice mode — prompt templates will include instructions for
-    /// short, conversational, TTS-friendly responses.
+    /// Makes prompt templates ask for short, TTS-friendly replies.
     pub fn set_voice_mode(&self, enabled: bool) {
         self.voice_mode
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
@@ -472,7 +462,6 @@ impl GooseAdapter {
 
     // ── Prefix-cache bookkeeping ──────────────────────────────────────────
     // Synchronous, guard dropped before return: safe to call from `async fn`s that `.await`.
-
     fn note_prefix_invalidated(&self, reason: InvalidationReason) {
         let mut state = self.prefix_cache.lock().unwrap_or_else(|e| e.into_inner());
         let served = state.turns_served;
@@ -1868,7 +1857,6 @@ impl GooseAdapter {
     }
 
     // ── Per-session tool selection ──────────────────────────────────────────
-
     /// Group-description vectors, cached on first success; `None` means "don't narrow".
     /// Failures aren't cached (the embedder may still be downloading), so a later session retries.
     async fn group_description_embeddings(&self) -> Option<&Vec<(String, Vec<f32>)>> {
@@ -3809,9 +3797,7 @@ impl GooseAdapter {
                 }
             }
 
-            // Per-turn usage from the provider's per-inference Usage events.
-            // Fall back to the chars/4 heuristic only when the provider emitted
-            // no Usage events at all (some HTTP providers).
+            // chars/4 fallback only for providers that emit no Usage events (some HTTP ones).
             let usage = if saw_usage {
                 turn_stats.context_used_tokens = Some(turn_stats.prompt_tokens);
                 pond_core::models::ports::provider::UsageStats {
@@ -6233,9 +6219,6 @@ mod tests {
         );
     }
 
-    /// D4: the prompt must not assert a capability `capabilities()` denies.
-    /// Voice mode forces `caps.vision = false`, so the section is off there too
-    /// — driven by the same instance-level flag, so the two cannot disagree.
     #[test]
     fn voice_mode_suppresses_the_vision_section_just_as_capabilities_does() {
         let vision_model = ("ollama", "gemma-4-E4B-it");

@@ -1,6 +1,5 @@
 //! The speculative-decoding drafter each chat model needs, shared by the server that fetches it
 //! and the adapter that uses it: a drifted copy downloads a drafter that is never used.
-
 // use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The drafter that pairs with a given chat model.

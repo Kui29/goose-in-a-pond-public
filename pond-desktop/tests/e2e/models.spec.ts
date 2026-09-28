@@ -7,10 +7,6 @@ async function goToModels(page: Parameters<typeof mockAllApiRoutes>[0]) {
   await page.goto("/");
   // Models sits behind the drawer's "Manage" group; navigateTo expands it.
   await navigateTo(page, "Models");
-  // No tab hop any more. The screen used to open on a guided-setup wizard with
-  // the real view behind a "Manage" tab; that split was removed deliberately —
-  // see the header comment in `src/sections/Models.tsx` — so roles, memory and
-  // downloads are on the section itself now.
 }
 
 test.describe("Models section", () => {

@@ -482,9 +482,7 @@ export const CATALOGUE: CatalogueCategory[] = [
           // value is a list of suggestor ids, parsed as a list (see LIST_TEXT in
           // SettingsCatalogue); clearing it unmutes everything.
           { key: "suggestions_muted", label: "Suggestions you have hidden", description: "Kinds of suggestion Home will not offer. Clear this to see them again.", control: { kind: "text", placeholder: "Nothing hidden" }, consumer: "live" },
-          // Only ever touches names the pond wrote itself. A title typed by
-          // hand is left alone whatever this is set to, so the control does not
-          // need to warn about losing one.
+          // Only renames titles the pond wrote itself; hand-typed ones are never touched.
           { key: "session_titling_enabled", label: "Give conversations better names", description: "Let it name your conversations while it is idle.", control: { kind: "toggle" }, consumer: "live" },
         ],
       },

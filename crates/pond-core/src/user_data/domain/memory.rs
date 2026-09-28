@@ -30,7 +30,6 @@ pub enum MemorySegment {
     /// TEXT with no CHECK constraint, so the new label round-trips through
     /// serde the day the variant exists.
     Routine,
-    /// Factual knowledge worth remembering.
     Knowledge,
     /// Transient context (current situation, ongoing state).
     Context,
@@ -612,7 +611,6 @@ const DANGLING_TAIL_VERBS: &[&str] = &[
 // still sitting in the conversation; storing either keeps something that reads
 // as a date for as long as the pond runs. The model is the only thing that
 // could draw those two lines, which is why the prompt asks it to.
-
 /// Month names and the abbreviations a model actually writes.
 const MONTH_WORDS: &[&str] = &[
     "january",
@@ -773,7 +771,6 @@ const CLOCK_LEADS: &[&str] = &[
 const DURATION_LEADS: &[&str] = &["in", "within"];
 
 // ── Recurrence ──────────────────────────────────────────────────────────────
-
 /// Words that turn a named weekday, month or clock time into a pattern rather
 /// than a point on a calendar.
 const RECURRENCE_MARKERS: &[&str] = &["each", "every", "daily", "nightly", "weekly", "monthly"];
@@ -1176,7 +1173,6 @@ pub fn names_subject(content: &str, aliases: &[String]) -> bool {
 }
 
 // ── Does a reminder cover this note ─────────────────────────────────────────
-
 /// Words that are common enough to appear in two unrelated sentences about one
 /// household, and so cannot be evidence that two of them are about one thing.
 ///

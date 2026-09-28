@@ -988,9 +988,6 @@ mod tests {
         );
     }
 
-    /// The reviewer is off on a stock install, and that is structural rather
-    /// than documented: with `ext_orchestrator_enabled` off there is no
-    /// machinery to run a child at all.
     #[test]
     fn the_orchestrator_being_off_outranks_every_other_reason_to_run() {
         let off = ReviewInputs::for_tick(idle_schedule(), false, 0, false);
@@ -1983,9 +1980,7 @@ mod tests {
         );
     }
 
-    /// A review's own session id starts with `sched-`, so this is not a
-    /// hypothetical: without the origin filter, the first review would nominate
-    /// itself as the audience for the second.
+    /// A review's own session is `sched-`: unfiltered, one review would address the next.
     #[test]
     fn the_ponds_own_conversations_never_nominate_an_audience() {
         let now = Utc::now();

@@ -221,7 +221,6 @@ impl LocalInferenceLlmAdapter {
     //     let entry = registry.get_model(spec.id)?;
     //     entry.local_path.exists().then(|| spec.id.to_string())
     // }
-
     /// Stamp the model registry so llama-cpp-2 picks up device settings at load time.
     ///
     /// A device profile lets a non-CUDA build take the Jetson branch on purpose: otherwise
@@ -363,10 +362,8 @@ impl LocalInferenceLlmAdapter {
         parse_gguf_file(path).map(|info| ModelProbe::from_gguf(&info))
     }
 
-    /// Patch the Goose model registry with Jetson Orin Nano settings; errors (model not yet
-    /// downloaded, poisoned lock) are ignored and defaults apply. Not yet fail-closed on memory
-    /// fit: `n_gpu_layers = 99` silently partial-offloads to CPU past the budget. An on-device
-    /// guard must drop the page cache before the `-ngl` load or NvMap fails with error 12.
+    /// Stamp Jetson settings into the registry; failures leave defaults. Not fail-closed on fit:
+    /// past the budget `n_gpu_layers = 99` silently spills to CPU.
     fn apply_jetson_settings(model_id: &str) {
         use goose::providers::local_inference::local_model_registry::{
             get_registry, ModelSettings, ToolCallingMode,
@@ -542,11 +539,7 @@ impl LocalInferenceLlmAdapter {
         applied
     }
 
-    /// Follow symlinks so two rows naming one GGUF compare equal.
-    ///
-    /// The registry's `local_path` is a `models/gguf/` name that the startup
-    /// hf_cache migration turns into a symlink into `hf_cache/.../blobs/<sha>`,
-    /// and different rows can hold either spelling.
+    /// Follow symlinks so rows naming one GGUF (a `models/gguf/` link or its blob) compare equal.
     fn resolved(p: &std::path::Path) -> std::path::PathBuf {
         std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
     }
@@ -643,10 +636,8 @@ impl LocalInferenceLlmAdapter {
 #[cfg(test)]
 mod tests {
 
-    /// The adapter's probe path end to end against real GGUFs: `probe_model` must read a
-    /// `ModelProbe` off each file and the decisions must differ across the collection (a probe
-    /// returning one answer for everything looks like it works). Set `GIAP_TEST_GGUF_DIR` to a
-    /// `models/gguf` dir, then `cargo test -p pond-adapters-local-inference --lib -- --ignored`.
+    /// Run with `GIAP_TEST_GGUF_DIR` set to a `models/gguf` dir. The decisions must differ across
+    /// files: a probe giving one answer for everything would look like it works.
     #[test]
     #[ignore = "needs real GGUF files; set GIAP_TEST_GGUF_DIR"]
     fn probe_model_reads_real_files_and_separates_them() {
@@ -766,9 +757,6 @@ mod tests {
         assert!(!thinking);
     }
 
-    /// Tests needing a real model are `#[ignore]` and gated on `GIAP_TEST_MODEL_PATH`. Run with
-    /// `GIAP_TEST_MODEL_PATH=/path/to/model.gguf` set and
-    /// `cargo test -p pond-adapters-local-inference -- --ignored`.
     use super::*;
 
     #[test]

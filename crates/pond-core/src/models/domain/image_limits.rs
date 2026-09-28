@@ -50,10 +50,7 @@ pub fn is_engine_decodable(mime_type: &str) -> bool {
     ENGINE_DECODABLE_IMAGE_TYPES.contains(&base)
 }
 
-/// Why a turn's image attachments were rejected.
-///
-/// Deliberately carries the offending numbers so the HTTP layer can render an
-/// actionable message ("3.2 MB, limit is 4.0 MB") instead of "bad request".
+/// Why a turn's images were rejected, with the numbers for an actionable HTTP message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLimitError {
     TooManyImages {

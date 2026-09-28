@@ -95,10 +95,8 @@ beforeEach(() => {
   // (or of prepareImage's resolved image) has to be re-established here too.
   vi.mocked(api.getVisionStatus).mockResolvedValue(READY_STATUS);
   vi.mocked(prepareImage).mockResolvedValue(fakePrepared());
-  // The turn lives in a module singleton so it can outlive an unmount, which
-  // means it also outlives `cleanup()` — without this, one test's transcript is
-  // the next test's starting state. This file also mocks AppContext wholesale,
-  // so the provider that normally installs the bridge never runs here.
+  // The turn is a module singleton that outlives cleanup(), so reset it; with AppContext mocked
+  // wholesale, no provider installs the bridge, so install it here.
   __resetChatRunForTests();
   setChatRunBridge({
     sessionToken: "test-token",
@@ -644,7 +642,6 @@ describe("Chat — picture support", () => {
 });
 
 // ── Leaving the section and coming back ───────────────────────────────────────
-
 // GuiMode's section `switch` really unmounts Chat, so `unmount()` here is the sidebar press itself.
 describe("navigating away mid-turn", () => {
   /** A stream held open, so "while Goose is still answering" is a real state. */

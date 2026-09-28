@@ -41,7 +41,6 @@ import { prepareImage, validateAttachmentSet } from "../lib/imageAttach";
 import type { PreparedImage } from "../lib/imageAttach";
 import { useSuggestedPrompts } from "../hooks/useSuggestedPrompts";
 
-
 export function Chat() {
   const state    = useAppState();
   const dispatch = useAppDispatch();
@@ -50,10 +49,7 @@ export function Chat() {
   // See `useSuggestedPrompts`.
   const chips = useSuggestedPrompts(state.sessionId);
 
-  // The transcript, the turn in flight and the queue behind it belong to the
-  // store, not to this component: pressing anything in the sidebar unmounts
-  // Chat, and a turn is not a property of whichever screen happens to be
-  // showing. See `state/chatRunStore`.
+  // Turn state lives in `state/chatRunStore`: any sidebar press unmounts Chat, and the turn must survive it.
   const run = useChatRun();
   const { messages, busy, queued, turnSeed, loadingSession } = run;
 
@@ -229,21 +225,8 @@ export function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.refusedDraft]);
 
-  /**
-   * Follow a session id set from OUTSIDE — a deep link, or the
-   * `session-created` event AppContext listens for.
-   *
-   * Keyed on app state actually changing, not on it disagreeing with the store.
-   * Those are different questions: opening a conversation from the wall sets
-   * the store first and dispatches second, so a disagreement is usually just
-   * this component's own change on its way round, and treating it as external
-   * would reload the history we already have — or, when the dispatch does not
-   * come back at all, quietly drop the open conversation.
-   *
-   * A cleared id records and stops. Somebody else clearing app state is not an
-   * instruction to throw away the transcript; "New chat" is, and it says so
-   * through `resetConversation`.
-   */
+  // Follows a session id set from outside (deep link, `session-created`). Keyed on app state changing, not
+  // on disagreeing with the store: our own wall opens disagree briefly. A cleared id keeps the transcript.
   const lastExternalIdRef = useRef<string | undefined>(state.sessionId ?? undefined);
   useEffect(() => {
     const newId = state.sessionId ?? undefined;
@@ -987,7 +970,6 @@ export function Chat() {
             </div>
           );
         })}
-
 
         {/* Messages typed while Goose was still answering. Shown in place, muted,
             so the queue is visible rather than a silent buffer. */}

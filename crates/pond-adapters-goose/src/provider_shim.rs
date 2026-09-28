@@ -370,10 +370,7 @@ fn promote_tool_result_images(
         ));
         return Some(out);
     }
-    // A dedicated trailing user message rather than editing an existing one:
-    // rewriting a tool-response message would break the call/response pairing
-    // every provider validates, and appending to the last user message would
-    // reorder it after its own assistant reply.
+    // A new trailing message: editing a tool response breaks call/response pairing.
     let mut carrier = Message::user().with_text(
         "The images below are the frames returned by the tool call above. Describe only what \
          you can actually see in them.",
@@ -697,7 +694,7 @@ impl Provider for GiapProviderShim {
             .as_deref()
             .or(stripped_messages.as_deref())
             .unwrap_or(messages);
-        // Phase F3: built from the messages the provider will actually receive.
+        // Built from the messages the provider will actually receive.
         let promoted_messages = if provider_relocates_tool_images(self.inner.get_name()) {
             None
         } else {
