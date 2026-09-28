@@ -27,8 +27,11 @@ ssh nano 'cd goose-in-a-pond && bash scripts/giap.sh logs'     # follow logs (kn
 
 - Unit file: `~/.config/systemd/user/goose-in-a-pond.service` on the Jetson
 - Binary: `~/goose-in-a-pond/target/release/pond-server` (CUDA build)
-- Dashboard: **http://nano.local:8080** (8080 because a user service cannot
-  bind 80 without capabilities; the embedded web UI serves same-origin)
+- Dashboard: loopback only, so tunnel to it: `ssh -N -L 8080:127.0.0.1:8080 nano`, then
+  **http://localhost:8080**. Keep the same port on both ends or OAuth redirects miss. (8080
+  because a user service cannot bind 80 without capabilities; the embedded web UI serves
+  same-origin.) Phones reach the pond over pinned HTTPS, normally port 4443; see
+  `docs/remote-access.md`.
 - Logs: rolling files at `~/.local/share/goose-in-a-pond/logs/pond.log.YYYY-MM-DD`.
   **Not journald** — `journalctl --user -u goose-in-a-pond` is empty by design,
   which has repeatedly been misread as "the service is silent". Timestamps are

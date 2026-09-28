@@ -77,4 +77,6 @@ ssh "$HOST" "systemctl --user restart goose-in-a-pond.service || exit 1
   systemctl --user --no-pager status goose-in-a-pond.service | head -12 >&2
   exit 1"
 
-echo "Deployed. Dashboard: http://nano.local:8080"
+# The HTTP listener is loopback-only; phones use pinned HTTPS (normally 4443). Same port both
+# ends of the tunnel, so OAuth redirects registered against it still land.
+echo "Deployed. Dashboard: ssh -N -L 8080:127.0.0.1:8080 $HOST, then http://localhost:8080"
