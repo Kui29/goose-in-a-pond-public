@@ -29,9 +29,6 @@ const TRACKER_SYMBOLS: &[&str] = &[
 const EGRESS_TRACKED: &[&str] = &[
     "crates/pond-adapters-goose/src/extension_manager.rs",
     "crates/pond-api/src/routes.rs",
-    // PAI-8's first connector. check_egress before the send and record_egress
-    // after, per the weather template -- so an offline pond refuses to ask a
-    // third party about the household's day, and every request is in the feed.
     "crates/pond-adapters-caldav/src/lib.rs",
     "crates/pond-adapters-weather/src/lib.rs",
     "crates/pond-hf-cache/src/lib.rs",

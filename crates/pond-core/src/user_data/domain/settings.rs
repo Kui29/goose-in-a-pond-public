@@ -235,12 +235,7 @@ pub struct Settings {
     #[serde(default)]
     pub suggestions_muted: Vec<String>,
 
-    /// Selected TTS voice.
-    ///
-    /// Kokoro voice id (`af_heart`, `bm_george`, …) since the engine swap; a
-    /// Piper `.onnx` filename on installs that predate it. Resolution accepts
-    /// both, so an upgrade does not silence a pond whose stored value is still
-    /// a Piper filename.
+    /// Kokoro voice id (`af_heart`, …); a legacy Piper `.onnx` filename is still accepted.
     #[serde(default = "Settings::default_tts_voice")]
     pub voice_tts_voice: String,
 
@@ -2030,11 +2025,7 @@ mod tests {
             // this list passed on that claim. The TS mirror is in
             // `pond-desktop/src/api/types.ts` like every other entry here.
             "suggestions_muted",
-            // Private mesh (#132 Milestone 2): the Mesh section's toggle
-            // (Mesh.tsx) starts/stops the real libp2p MeshTransport. Requires
-            // a `pond-server` build with the `mesh` feature — flipping it on
-            // a build without that feature is a no-op the transport-builder
-            // warns about, not a UI error.
+            // Without a `mesh` build the toggle is a no-op (the transport builder warns).
             "mesh_enabled",
             "active_embedding_model",
             "active_llm_model",

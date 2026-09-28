@@ -306,10 +306,7 @@ pub struct ChatService {
     system_prompt: String,
     /// Optional Answer Reviewer — adversarial post-inference quality gate.
     answer_reviewer: Option<Arc<dyn crate::models::ports::answer_reviewer::AnswerReviewer>>,
-    /// Optional unified activity log. When set, `persist_assistant_turn` records
-    /// one Agent event, one Inference event (when token usage is known), and one
-    /// Tool event per tool call — so the activity feed reflects chat activity,
-    /// not just Auth/Network. `None` in tests and the CLI path.
+    /// When set, `persist_assistant_turn` records Agent, Inference and per-tool events.
     event_log: Option<Arc<dyn EventLog>>,
     /// `emit_event` also forwards here, e.g. to the `--json-events` NDJSON writer.
     event_sink: Option<WorkflowEventSink>,
@@ -904,22 +901,8 @@ impl ChatService {
         }
     }
 
-    /// Streaming chat — routes through the Agent, chunks TTS by sentence,
-    /// AND persists the turn (user + assistant) to session storage.
-    ///
-    /// Differences from `chat_once`:
-    /// - Calls `agent.chat_stream()` so text arrives token-by-token.
-    /// - Speaks each completed sentence immediately (low-latency TTS).
-    /// - Announces MCP tool calls with a short spoken phrase before execution.
-    /// - Speaking happens *inside* this method; callers must NOT call
-    ///   `voice_output.speak()` on the returned text.
-    ///
-    /// This is the persisting entry point used for a *confirmed* transcript.
-    /// The Q2-26 speculative path must NOT call this — it calls
-    /// `stream_response_inner` (no persistence) so a provisional transcript
-    /// that later turns out wrong never lands a phantom turn in
-    /// `pond_system.db`. `run_loop` persists the confirmed turn exactly once
-    /// via `persist_confirmed_turn`.
+    /// Stream, speak by sentence, and persist a confirmed turn; don't `speak()` the result again.
+    /// Speculative transcripts must use the non-persisting `stream_response_inner` instead.
     pub async fn chat_stream_once(&self, message: String) -> Result<String> {
         let fired_at = std::time::Instant::now();
         let user_msg = ChatMessage::user(message.clone());

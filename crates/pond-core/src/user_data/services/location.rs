@@ -121,19 +121,8 @@ impl Location {
         )
     }
 
-    /// Coordinates and a label for a weather lookup, or `None` when there is
-    /// nothing to ask about.
-    ///
-    /// This decision was written out twice in `main.rs`, once for the HTTP
-    /// server and once for voice mode, as two copies of the same six lines —
-    /// and both copies read the raw settings fields, so neither of them knew
-    /// about the time-zone fallback. A pond that finished onboarding with a
-    /// zone and no weather box was told it had no location by a pond holding
-    /// the answer, on both surfaces, in the same words.
-    ///
-    /// The label is the place name when there is one and the coordinates
-    /// otherwise, because the provider geocodes a name on demand and a name is
-    /// what a person recognises in a log line.
+    /// Coordinates and a label for a weather lookup, or `None` when there is nothing to ask.
+    /// The label prefers the name: the provider geocodes it, so a name alone is enough.
     pub fn weather_target(&self) -> Option<(f64, f64, String)> {
         if !self.has_coordinates() && !self.is_named() {
             return None;

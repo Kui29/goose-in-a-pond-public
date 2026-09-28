@@ -1932,10 +1932,6 @@ mod tests {
         );
     }
 
-    /// The cheap answer must agree with the expensive one, because the idle
-    /// re-titling pass trusts it to decide whether a conversation has outgrown
-    /// its name — and a wrong answer either freezes a stale title forever or
-    /// burns the inference slot renaming something that has not changed.
     #[tokio::test]
     async fn messages_after_agrees_with_walking_the_history() {
         let (s, _tmp) = make_storage().await;
@@ -2988,7 +2984,6 @@ mod tests {
         assert!(matches!(err, SessionStorageError::SessionNotFound(id) if id == "no-such-session"));
     }
 
-    /// A legacy row has a NULL source and is unattributed, so anything binds it.
     #[tokio::test]
     async fn anything_binds_a_legacy_row_with_no_source() {
         let (s, _tmp) = make_storage().await;

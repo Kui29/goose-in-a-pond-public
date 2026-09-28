@@ -102,20 +102,14 @@ function optionsFor(
     const seen = [
       ...new Set(models.filter(PROVIDERS["llm-models"]).map((m) => m.provider)),
     ];
-    // "mesh" (#132) has no catalog row — it is not a downloadable model, it is
-    // a trusted peer's compute — so it can never appear via the `models` scan
-    // above. Gated on `mesh_enabled`, same principle as the `downloaded`
-    // filter below: offering a provider that cannot actually serve a turn
-    // right now is offering a failure, not a choice.
+    // "mesh" (a peer's compute) has no catalogue row, so add it, but only while mesh is enabled.
     const providers = meshEnabled ? [...seen, "mesh"] : seen;
     return providers.sort().map((p) => ({ value: p, label: p }));
   }
   return (
     models
       .filter(PROVIDERS[source])
-      // A model the device has not downloaded cannot be selected into service,
-      // so offering it would be offering a failure. `downloaded` is optional in
-      // the registry, and absent means "not tracked" rather than "missing".
+    // Only downloaded models can serve; an absent `downloaded` means untracked, not missing.
       .filter((m) => m.downloaded !== false)
       .map((m) => ({
         value: source === "tts-voices" ? (m.filename ?? m.name) : m.name,
@@ -358,9 +352,7 @@ function EntryRow({
 
           {control.kind === "lookup" &&
             (options === null ? (
-              // The registry has not answered yet, or could not be reached.
-              // Free text rather than an empty picker: an empty dropdown offers
-              // nothing and hides the value that is already set.
+              // No registry answer yet: free text, since an empty picker would hide the current value.
               <input
                 type="text"
                 className="native-input scat__field scat__field--text"

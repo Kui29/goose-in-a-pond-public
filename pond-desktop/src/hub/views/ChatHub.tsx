@@ -72,7 +72,6 @@ function makeSeed(userName: string): Row[] {
   ];
 }
 
-
 /** Project a stored message into what this surface renders. */
 function toRow(m: Message): Row {
   // One inline card: the last tool a turn called is the one its answer is about.
@@ -114,9 +113,7 @@ export function ChatHubView() {
   // hardcoded ones went: three of them named hardware a pond may not own.
   const chips = useSuggestedPrompts(state.sessionId);
 
-  // Presentation, not conversation: an empty pond opens on something to read
-  // rather than a blank pane. The seed is replaced by the first real message
-  // and never enters the store.
+  // Presentation only: shown until the first real message, never stored.
   const [seed, setSeed] = useState<Row[]>(() => makeSeed(""));
 
   // Populate the greeting with the real user name once settings are loaded
@@ -289,7 +286,6 @@ export function ChatHubView() {
     prevBusyRef.current = busy;
     if (!busy && wasBusy) inputRef.current?.focus();
   }, [busy]);
-
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && !e.shiftKey) {

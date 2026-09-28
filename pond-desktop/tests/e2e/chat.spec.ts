@@ -302,7 +302,6 @@ test.describe("Chat section — a turn survives leaving the section", () => {
   });
 });
 
-
 // ── Live E2E tests (require running pond-server) ───────────────────────────────
 
 const LIVE = !!process.env.GIAP_SERVER_URL;

@@ -67,7 +67,6 @@ export function Pairing() {
     }
   }, []);
 
-  // Render QR code onto canvas whenever pairUrl changes.
   useEffect(() => {
     if (!info?.pairUrl || !canvasRef.current) return;
     QRCode.toCanvas(canvasRef.current, info.pairUrl, {
@@ -77,7 +76,6 @@ export function Pairing() {
     }).catch((e) => console.error("QR render failed", e));
   }, [info?.pairUrl]);
 
-  // Countdown timer.
   useEffect(() => {
     if (!info?.expiresAt) return;
     const id = setInterval(() => setTimeLeft(timeUntil(info.expiresAt)), 500);
@@ -85,7 +83,6 @@ export function Pairing() {
     return () => clearInterval(id);
   }, [info?.expiresAt]);
 
-  // Auto-refresh when expired.
   useEffect(() => {
     if (timeLeft === "expired") loadPairingInfo(true);
   }, [timeLeft, loadPairingInfo]);

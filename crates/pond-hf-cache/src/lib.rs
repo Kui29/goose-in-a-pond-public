@@ -59,12 +59,7 @@ pub struct DestNotALink {
     pub path: PathBuf,
 }
 
-/// A download that stopped because its progress callback asked it to.
-///
-/// Its own type rather than a string, because the caller has to tell this
-/// apart from a real failure: a stop is expected and leaves a resumable
-/// `.incomplete` file behind, while a failure is not and may not. Match it
-/// with [`is_stopped`].
+/// A download its progress callback stopped; the `.incomplete` file stays resumable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stopped;
 

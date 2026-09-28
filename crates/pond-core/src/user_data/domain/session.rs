@@ -177,7 +177,6 @@ impl ExtractionCursor {
     }
 }
 
-/// Represents a conversation session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,

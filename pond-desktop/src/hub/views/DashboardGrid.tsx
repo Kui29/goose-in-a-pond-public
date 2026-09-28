@@ -1,6 +1,6 @@
+
 // Home, shared by `hub/views/Home.tsx` (panel) and `sections/Dashboard.tsx` (desktop) so the two
 // can't drift. Search reaches devices kept off Home; the layout lives in `state/dashboardLayout.ts`.
-
 import { Fragment, useState, type ReactElement, type ReactNode } from "react";
 import { InkButton, InkSegmented, InkSheet, InkStack, InkText } from "@jarida/ink/react";
 import { HubIco, micEl } from "../primitives/HubIco";
