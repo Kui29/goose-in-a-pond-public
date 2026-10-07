@@ -15,7 +15,7 @@ on:
       - ".ai/**"
       - "LICENSE"
   pull_request:
-    branches: [main, hardening]
+    # Stacked feature/security PRs need the same checks before their bases merge.
     # Documentation cannot break a build, and this repo's guides are long and
     # edited often — each edit was spending a full Rust + frontend matrix to
     # prove that markdown still parses.
@@ -136,6 +136,31 @@ jobs:
         # which is why this only ever broke in CI.
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev protobuf-compiler
 
+      - name: Validate private dependency credential routing
+        run: |
+          bash -n scripts/ci/git-askpass.sh
+          python3 scripts/ci/test_git_askpass.py
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_GITHUB_TOKEN: ${{ secrets.CARGO_GITHUB_TOKEN || secrets.GIAP_PRIVATE_FORK_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_ASKPASS: ${{ github.workspace }}/scripts/ci/git-askpass.sh
+          GIT_TERMINAL_PROMPT: '0'
+          LC_ALL: C
+          # Include the path in credential prompts and disable stored helpers.
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: credential.useHttpPath
+          GIT_CONFIG_VALUE_0: 'true'
+          GIT_CONFIG_KEY_1: credential.helper
+          GIT_CONFIG_VALUE_1: ''
+        run: |
+          if [ -z "$CARGO_GITHUB_TOKEN" ]; then
+            echo '::error::CARGO_GITHUB_TOKEN is required with read-only Contents access to jarida-io/llama-cpp-rs-giap. See scripts/ci/README.md.'
+            exit 1
+          fi
+          cargo fetch --locked
+
       - name: cargo fmt
         run: cargo fmt --check
 
@@ -255,6 +280,13 @@ jobs:
 
       - name: cargo test (lightning payment rail — pond-adapters-lightning)
         run: cargo test -p pond-adapters-lightning
+
+      # rust-cache saves ~/.cargo/git after this job, and a fork's pull_request run can restore a
+      # cache written on this repository's branches. Take the private fork's source out first so
+      # no cache carries it; the next run fetches it again with the token.
+      - name: Keep the private dependency out of the cache
+        if: always()
+        run: rm -rf ~/.cargo/git/db/llama-cpp-rs-giap-* ~/.cargo/git/checkouts/llama-cpp-rs-giap-*
 
   # 2: Frontend ─────────────────────────────────────────────────────────
   # Runs Vitest unit tests and Playwright E2E tests.
@@ -505,7 +537,7 @@ jobs:
         # The secret is read here rather than in an `if:`, because the secrets
         # context is not available to job-level conditions.
         env:
-          HAS_TOKEN: ${{ secrets.GIAP_PRIVATE_FORK_TOKEN != '' }}
+          HAS_TOKEN: ${{ secrets.CARGO_GITHUB_TOKEN != '' || secrets.GIAP_PRIVATE_FORK_TOKEN != '' }}
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
@@ -517,7 +549,7 @@ jobs:
           # is red. Skip rather than add a fifth permanently-failing check.
           if [ "$HAS_TOKEN" != "true" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Live test skipped::GIAP_PRIVATE_FORK_TOKEN is not set, so cargo cannot fetch jarida-io/llama-cpp-rs-giap. Add the secret to enable this job."
+            echo "::notice title=Live test skipped::CARGO_GITHUB_TOKEN (or legacy GIAP_PRIVATE_FORK_TOKEN) is not set, so cargo cannot fetch jarida-io/llama-cpp-rs-giap. Add the secret to enable this job."
             exit 0
           fi
 
@@ -546,16 +578,33 @@ jobs:
         with:
           submodules: recursive
 
-      # Lets cargo fetch the private fork. Scoped to github.com and torn down
-      # with the runner; the token is never written to a tracked file.
-      - name: Authenticate cargo to the private fork
-        env:
-          TOKEN: ${{ secrets.GIAP_PRIVATE_FORK_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Validate private dependency credential routing
+        run: |
+          bash -n scripts/ci/git-askpass.sh
+          python3 scripts/ci/test_git_askpass.py
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_GITHUB_TOKEN: ${{ secrets.CARGO_GITHUB_TOKEN || secrets.GIAP_PRIVATE_FORK_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_ASKPASS: ${{ github.workspace }}/scripts/ci/git-askpass.sh
+          GIT_TERMINAL_PROMPT: '0'
+          LC_ALL: C
+          # Include the path in credential prompts and disable stored helpers.
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: credential.useHttpPath
+          GIT_CONFIG_VALUE_0: 'true'
+          GIT_CONFIG_KEY_1: credential.helper
+          GIT_CONFIG_VALUE_1: ''
+        run: |
+          if [ -z "$CARGO_GITHUB_TOKEN" ]; then
+            echo '::error::CARGO_GITHUB_TOKEN is required with read-only Contents access to jarida-io/llama-cpp-rs-giap. See scripts/ci/README.md.'
+            exit 1
+          fi
+          cargo fetch --locked
 
       # live-test.sh drives the dashboard the server actually serves when asked
       # for --ui; without Node it still runs every HTTP assertion.
@@ -569,6 +618,13 @@ jobs:
       # for the auth phase are all the script's own doing -- see its header.
       - name: scripts/live-test.sh
         run: bash scripts/live-test.sh
+
+      # rust-cache saves ~/.cargo/git after this job, and a fork's pull_request run can restore a
+      # cache written on this repository's branches. Take the private fork's source out first so
+      # no cache carries it; the next run fetches it again with the token.
+      - name: Keep the private dependency out of the cache
+        if: always()
+        run: rm -rf ~/.cargo/git/db/llama-cpp-rs-giap-* ~/.cargo/git/checkouts/llama-cpp-rs-giap-*
 
   # Packages a real .app and checks its shape. Gated to manual dispatch and
   # tags ONLY: macOS runners bill at 10x, and nothing here changes often

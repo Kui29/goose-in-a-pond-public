@@ -36,3 +36,17 @@ Local test results and runtime boundaries are recorded in the PRs. Windows
 native notifications, live Nostr relays and full Jetson runtime integration
 require separate verification. HawkScan is unavailable without its CLI and
 API key; hosted Rust CI needs the private Cargo dependency credential.
+
+## Advisory discovered during final integration
+
+The expanded scan also identified GHSA-pqg4-j6r4-53mv, published to GitHub's
+advisory database on October 6. concurrently 10.0.5, its latest release at the
+time of this update, pins shell-quote 1.9.0. A scoped desktop override selects
+1.11.0 until concurrently updates its dependency. The four line-terminator
+variants now throw before producing an unsafe shell command. Ordinary parallel
+command startup, all desktop tests, types and builds pass with the override.
+
+The final CI PR scans all five relevant lockfiles, including Matter and the
+standalone Goose workspace. These fixes close alerts after the PR stack is
+merged and GitHub rescans the default branch; opening the PRs alone does not
+close the current dashboard entries.
