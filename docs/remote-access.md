@@ -75,6 +75,11 @@ coordinator policy permits an approved phone to reach only its own Pond HTTPS po
 - HTTPS binds to all IPv4 interfaces, normally port 4443, and serves the API.
   `serve --https-port PORT` overrides its starting port. Each listener tries ten
   consecutive ports. Neither listener falls back to plaintext network access.
+- The one plaintext exception is development-only: a debug build started with
+  `POND_DEV_INSECURE_LAN=1` also serves the companion API over HTTP on port 4080
+  for the app running in Expo Go. Release builds ignore it, mDNS never advertises
+  it, and remote access is unavailable through it. See
+  [Development switches](auth-network-posture.md#development-switches-2026-10-05).
 - Read `<data_dir>/.runtime_api_port` and `.runtime_https_port` for actual ports.
   `/api/v1/system/info` publishes `https_port` and `tailnet_address` to anyone; the
   pin comes with the pairing code from `/handshake/pairing-code` (host only) and

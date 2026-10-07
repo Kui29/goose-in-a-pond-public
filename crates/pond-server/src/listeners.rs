@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use axum::{Extension, Router};
 use pond_api::host_guard::HostCredential;
+use pond_api::insecure_dev::InsecureDevLan;
 use pond_api::network::CompanionTransport;
 use pond_api::AppState;
 
@@ -24,6 +25,9 @@ pub struct Listeners {
     /// The private Unix socket the embedded node forwards tailnet requests to.
     #[cfg(unix)]
     pub embedded: Router,
+    /// Plain HTTP for Expo Go, bound only when a debug build is asked for it: the companion
+    /// API without remote-access enrollment or presence. See `pond_api::insecure_dev`.
+    pub insecure: Router,
 }
 
 /// Build the routers for every listener from the shared application state.
@@ -32,19 +36,30 @@ pub fn compose(
     static_dir: PathBuf,
     transport: CompanionTransport,
     credential: HostCredential,
+    insecure_dev: Option<InsecureDevLan>,
     #[cfg(unix)] embedded: Arc<Runtime>,
 ) -> Listeners {
-    let companion =
-        pond_api::build_companion_router(state.clone()).layer(Extension(transport.clone()));
-    let dashboard = pond_api::build_router(state.clone(), static_dir).layer(Extension(transport));
+    let companion = pond_api::insecure_dev::advertise(
+        pond_api::build_companion_router(state.clone()).layer(Extension(transport.clone())),
+        insecure_dev,
+    );
+    let dashboard = pond_api::insecure_dev::advertise(
+        pond_api::build_router(state.clone(), static_dir).layer(Extension(transport)),
+        insecure_dev,
+    );
     #[cfg(unix)]
     let companion = companion
         .layer(Extension(embedded.clone() as Arc<dyn RemoteRevocation>))
-        .layer(Extension(embedded.address.clone()))
-        .merge(embedded_network::companion_management(
-            embedded.clone(),
-            state,
-        ));
+        .layer(Extension(embedded.address.clone()));
+    // Taken before remote-access enrollment is merged in and before presence is layered: a
+    // node's enrollment never crosses plaintext, and a plaintext request never renews remote
+    // access. Revocation stays, so signing out over this listener still reaches the tailnet.
+    let insecure = pond_api::insecure_dev::router(companion.clone());
+    #[cfg(unix)]
+    let companion = companion.merge(embedded_network::companion_management(
+        embedded.clone(),
+        state,
+    ));
     // Taken before presence is added: a request over the tailnet must never count as the
     // phone being at home. The middleware's LAN check says the same; this makes it structural.
     #[cfg(unix)]
@@ -71,5 +86,6 @@ pub fn compose(
         companion,
         #[cfg(unix)]
         embedded: tailnet,
+        insecure,
     }
 }

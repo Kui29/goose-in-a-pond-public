@@ -4,6 +4,7 @@ pub mod cleanup;
 pub(crate) mod download_failure;
 pub mod host_guard;
 pub(crate) mod image_normalize;
+pub mod insecure_dev;
 pub mod middleware;
 pub mod model_acquisition;
 pub(crate) mod model_views;

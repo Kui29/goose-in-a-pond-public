@@ -621,11 +621,14 @@ fn verify_limiter() -> &'static crate::middleware::RateLimiter {
 
 /// Logs, records and notifies a pairing outcome; best-effort, never alters the response.
 /// `reason` is a closed set of rejection codes, safe to log: none carries the code or MAC.
+/// `insecure_dev` marks an attempt that arrived on the plaintext development listener, so the
+/// audit trail says which devices were paired where anyone on the network could watch.
 async fn emit_pairing_outcome(
     state: &AppState,
     paired: bool,
     device_name: Option<&str>,
     reason: Option<&str>,
+    insecure_dev: bool,
 ) {
     use pond_core::security::domain::event::{Event, EventCategory, PrivacySensitivity};
 
@@ -656,6 +659,9 @@ async fn emit_pairing_outcome(
         }
         if let Some(reason) = reason.filter(|_| !paired) {
             event = event.attr("rejection_reason", reason);
+        }
+        if insecure_dev {
+            event = event.attr("transport", "insecure_dev");
         }
         if let Err(e) = event_log.append(event).await {
             tracing::warn!(error = %e, action, "failed to record pairing event");
@@ -716,10 +722,12 @@ async fn handshake_verify(
         axum::extract::ConnectInfo<std::net::SocketAddr>,
         axum::extract::rejection::ExtensionRejection,
     >,
+    insecure: Option<axum::Extension<crate::insecure_dev::InsecureDevTransport>>,
     body: Result<Json<VerifyRequest>, JsonRejection>,
 ) -> Result<Json<HandshakeResponse>, (StatusCode, Json<Value>)> {
     let peer = peer.ok();
     crate::network::require_lan(peer)?;
+    let insecure_dev = insecure.is_some();
     let peer = peer.expect("LAN guard requires a connection address").0;
     // Per source IP, loopback included.
     if let Err(remaining) = verify_limiter()
@@ -737,10 +745,21 @@ async fn handshake_verify(
     }
     let Json(request) = body.map_err(|_| bad_body())?;
     let device_name = request.device_name.clone();
+    // Plaintext has no TLS key to bind, so this listener pairs unbound by construction, and
+    // the six digits can be recovered offline from what crosses the wire. Say so every time.
+    if insecure_dev {
+        tracing::warn!(
+            kind = "insecure_dev_pairing",
+            peer = %peer.ip(),
+            bound = request.channel_binding.is_some(),
+            "pairing over the plaintext development listener; anyone on this network can take it over"
+        );
+    }
     // Without a binding the MAC covers no key, so whoever answered the phone's TLS can take
     // its proof, recover the six digits offline, and pair in its place. Only loopback, which
-    // no one can sit between, may pair unbound; the challenge is left unspent.
-    if request.channel_binding.is_none() && !peer.ip().is_loopback() {
+    // no one can sit between, may pair unbound; the challenge is left unspent. The plaintext
+    // development listener is the one other exemption: it has no TLS key to bind.
+    if request.channel_binding.is_none() && !peer.ip().is_loopback() && !insecure_dev {
         tracing::warn!(
             kind = "unbound_pairing_refused",
             peer = %peer.ip(),
@@ -751,6 +770,7 @@ async fn handshake_verify(
             false,
             device_name.as_deref(),
             Some("channel_binding_required"),
+            insecure_dev,
         )
         .await;
         return Err((
@@ -766,6 +786,7 @@ async fn handshake_verify(
                 false,
                 device_name.as_deref(),
                 Some("internal_error"),
+                insecure_dev,
             )
             .await;
             return Err(handshake_error("verify", e));
@@ -776,6 +797,7 @@ async fn handshake_verify(
         resp.accepted,
         device_name.as_deref(),
         resp.rejection_reason.as_deref(),
+        insecure_dev,
     )
     .await;
     Ok(Json(resp))
@@ -3754,6 +3776,7 @@ async fn system_info(
     State(state): State<Arc<AppState>>,
     transport: Option<axum::Extension<crate::network::CompanionTransport>>,
     embedded: Option<axum::Extension<crate::network::EmbeddedAddress>>,
+    insecure_dev: Option<axum::Extension<crate::insecure_dev::InsecureDevLan>>,
     headers: axum::http::HeaderMap,
 ) -> Json<Value> {
     let authenticated = match crate::middleware::extract_bearer_token(&headers) {
@@ -3765,18 +3788,28 @@ async fn system_info(
     };
     let pairing = pairing_material(transport, embedded);
     if !authenticated {
-        return Json(json!({
+        let mut info = json!({
             "https_port": pairing["https_port"],
             "tailnet_address": pairing["tailnet_address"],
             // Pinned HTTPS pairing (v2), so a client can tell this from an older Pond.
             "protocol": 2,
-        }));
+        });
+        // Present only while the plaintext development listener runs, so its absence is the
+        // norm. The pin goes with it: it is public over mDNS, and binds nothing over plaintext.
+        if insecure_dev.is_some() {
+            info["insecure_dev"] = json!(true);
+            info["tls_spki_sha256"] = pairing["tls_spki_sha256"].clone();
+        }
+        return Json(info);
     }
     let mut info = pairing;
     info["port"] = json!(state.api_port);
     info["version"] = json!(env!("CARGO_PKG_VERSION"));
     info["platform"] = json!(std::env::consts::OS);
     info["arch"] = json!(std::env::consts::ARCH);
+    if insecure_dev.is_some() {
+        info["insecure_dev"] = json!(true);
+    }
     Json(info)
 }
 

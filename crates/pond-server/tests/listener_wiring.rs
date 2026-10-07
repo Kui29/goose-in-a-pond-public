@@ -59,6 +59,11 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with(None).await
+}
+
+/// The same, with the plaintext development listener on or off.
+async fn harness_with(insecure: Option<pond_api::insecure_dev::InsecureDevLan>) -> Harness {
     let test = pond_api::test_support::app_state().await;
     let transport = CompanionTransport {
         https_port: 4443,
@@ -78,6 +83,7 @@ async fn harness() -> Harness {
         std::path::PathBuf::from("pond-desktop/dist"),
         transport,
         credential.clone(),
+        insecure,
         #[cfg(unix)]
         embedded,
     );
@@ -356,4 +362,27 @@ async fn only_an_https_request_from_home_renews_remote_access() {
         .await
         .unwrap()
         .is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_plaintext_listener_never_enrolls_or_renews_remote_access() {
+    let h = harness_with(Some(pond_api::insecure_dev::InsecureDevLan { port: 4080 })).await;
+    // Loopback stands in for the LAN, as above: over HTTPS this request would renew.
+    let (status, _) = get(&h.listeners.insecure, LOOPBACK, "/api/v1/devices").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        h.presence.lapses_at("phone").await.unwrap().is_none(),
+        "a plaintext request counted as being at home"
+    );
+    // Enrollment is served over HTTPS, never over plaintext.
+    let path = "/api/v1/remote-access/configuration";
+    let (https, _) = get(&h.listeners.companion, LOOPBACK, path).await;
+    assert_ne!(
+        https,
+        StatusCode::NOT_FOUND,
+        "the companion lost enrollment"
+    );
+    let (plaintext, _) = get(&h.listeners.insecure, LOOPBACK, path).await;
+    assert_eq!(plaintext, StatusCode::NOT_FOUND);
 }

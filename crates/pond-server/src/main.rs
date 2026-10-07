@@ -3400,6 +3400,9 @@ async fn run_server(
         ports::bind_with_fallback("127.0.0.1", port.unwrap_or(ports::API_SERVER)).await?;
     let (https_listener, https_port) =
         ports::bind_with_fallback("0.0.0.0", https_port.unwrap_or(ports::HTTPS_SERVER)).await?;
+    // Debug builds only, and only on request: plaintext companion API for Expo Go.
+    let insecure_dev = pond_api::insecure_dev::from_env()?;
+    let insecure_listener = pond_api::insecure_dev::bind(insecure_dev).await?;
     let tls_hostname = hostname::get()?
         .to_string_lossy()
         .trim_end_matches(".local")
@@ -4274,6 +4277,7 @@ async fn run_server(
         static_dir,
         transport.clone(),
         host_credential,
+        insecure_dev.marker(),
         #[cfg(unix)]
         embedded.clone(),
     );
@@ -4306,6 +4310,12 @@ async fn run_server(
     );
     println!("Companion API: https://{hostname}.local:{https_port}/api/v1/health");
     println!("Pond public-key fingerprint: {}", transport.tls_spki_sha256);
+    if let Some(lan) = insecure_dev.marker() {
+        println!(
+            "INSECURE development API (plaintext, unpinned): http://{hostname}.local:{}/api/v1/health",
+            lan.port
+        );
+    }
 
     if open || (debug && has_display()) {
         let url = format!("http://localhost:{}", api_port);
@@ -4411,6 +4421,7 @@ async fn run_server(
         result = embedded_server => result,
         result = axum::serve(listener, listeners.dashboard.into_make_service_with_connect_info::<std::net::SocketAddr>()) => result.map_err(anyhow::Error::from),
         result = https_server => result.map_err(anyhow::Error::from),
+        result = pond_api::insecure_dev::serve(insecure_listener, listeners.insecure) => result,
         result = renewal => result,
         _ = shutdown_signal() => {
             tracing::info!("shutdown signal received -- stopping both listeners");

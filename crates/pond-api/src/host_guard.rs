@@ -129,7 +129,7 @@ pub async fn loopback_only(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-fn host_header(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn host_header(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::HOST)?.to_str().ok()?;
     let authority: axum::http::uri::Authority = value.parse().ok()?;
     Some(authority.host().to_owned())
@@ -163,7 +163,7 @@ fn is_first_party_origin(origin: &HeaderValue) -> bool {
 }
 
 /// Attacker-supplied text goes to the log, so keep it short.
-fn bounded(text: &str) -> String {
+pub(crate) fn bounded(text: &str) -> String {
     text.chars().take(100).collect()
 }
 

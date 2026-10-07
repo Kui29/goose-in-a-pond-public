@@ -337,11 +337,18 @@ pub async fn auth_middleware(
 ) -> Result<Response, AuthError> {
     // `ConnectInfo<SocketAddr>` comes from `main.rs`'s `into_make_service_with_connect_info`;
     // a request without it counts as remote, so failure narrows access.
+    // A request on the plaintext development listener is never the host's own: a browser on
+    // this machine reaches that listener as a loopback peer too. So it gets neither host-only
+    // routes nor the dev bypass below.
     let peer_is_loopback = req
         .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().is_loopback())
-        .unwrap_or(false);
+        .get::<crate::insecure_dev::InsecureDevTransport>()
+        .is_none()
+        && req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip().is_loopback())
+            .unwrap_or(false);
 
     if let Some(exposure) = route_exposure(req.method(), path.path()) {
         // Only onboarding-dependent classes read the database; the rest ignore `onboarded`.

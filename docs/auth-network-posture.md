@@ -379,6 +379,62 @@ POND_DEV_ALLOW_LOOPBACK=1
 
 This is **off by default** and intended only for dev machines.
 
+## Development switches (2026-10-05)
+
+Every switch below weakens a boundary described above. None is on by default, and
+none belongs on a household's Pond. Grep for the variable name rather than
+trusting a line number.
+
+| Variable | Effect | Release binary |
+|---|---|---|
+| `POND_DEV_ALLOW_LOOPBACK=1` | Tokenless requests from loopback peers pass the auth middleware ([Loopback](#loopback)). | Honoured: it is not build-gated. |
+| `POND_DEV_INSECURE_LAN=1` | Opens a plaintext HTTP listener for the companion API on every interface (below). | Ignored, with a WARN. |
+| `POND_DEV_INSECURE_LAN_PORT` | Port for that listener; default 4080, bound exactly, no fallback. | Ignored with it. |
+| `POND_DEV_SAME_MACHINE_MESH=1` | Mesh dials allocate a new port so two Ponds can run on one machine. | Honoured: it is not build-gated. |
+| `POND_NETWORK_BINARY` | Path of the embedded-networking helper instead of the bundled `pondnet`. | Ignored in release builds; debug builds honour it. |
+
+### The insecure development listener
+
+Expo Go has no native module to pin the Pond's TLS key, so the companion app
+running inside it cannot use the HTTPS listener at all. For that workflow only, a
+**debug** build started with `POND_DEV_INSECURE_LAN=1` serves the companion API
+over plain HTTP on `0.0.0.0:4080` (or `POND_DEV_INSECURE_LAN_PORT`). The decision
+is one function, `pond-api/src/insecure_dev.rs::decide`, and needs both the
+variable and `cfg(debug_assertions)`; a release binary with the variable set logs
+`kind = "insecure_dev_lan_ignored"` and opens nothing. In a debug build a value
+other than `1`, `0` or empty, or a bad port, stops startup rather than quietly
+running without it.
+
+What it exposes: everything on the listener is plaintext and unpinned. Anyone on
+the network can read every request and response, bearer and refresh tokens
+included; can replay those tokens against the HTTPS listener, where they are just
+as valid; can impersonate the Pond to the phone and the phone to the Pond; and can
+recover the six-digit pairing code offline from a single captured pairing, because
+an unbound MAC over plaintext is a dictionary of a million entries. Use it on a
+network you control, with a Pond holding no household data you mind losing, and
+re-pair over HTTPS before trusting the device again.
+
+What it serves: the companion router, with the same bearer-auth, rate-limit and
+LAN-peer pairing guards as the HTTPS listener and the remote-revocation hook, so a
+sign-out over it still revokes the phone's tailnet node. It never serves the
+dashboard or its management routes, never the remote-access enrollment routes
+(a node's enrollment never crosses plaintext), and it is not the tailnet socket.
+mDNS does not advertise it; the developer types its address into the app.
+
+Each request on it carries the `InsecureDevTransport` extension, inserted by the
+router rather than derived from anything the client sent. Pairing over it is
+unbound by construction (there is no TLS key to bind), logs
+`kind = "insecure_dev_pairing"`, and the `auth.device_paired` /
+`auth.pairing_verify_failed` audit event carries `transport = "insecure_dev"`.
+Unbound pairing is otherwise refused off loopback with `channel_binding_required`;
+the plaintext listener's marker is the one other exemption. The HTTPS listener's
+behaviour is unchanged.
+
+While it runs, `GET /api/v1/system/info` includes `"insecure_dev": true` on every
+listener (anonymous or authenticated); the key is absent otherwise. The process
+logs `kind = "insecure_dev_lan"` with the port at startup and every ten minutes,
+and `serve` prints the address beside the others.
+
 ## CORS
 
 Scoped to first-party origins (`app://giap`, `http://localhost:1420`,

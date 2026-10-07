@@ -175,6 +175,10 @@ Public, so a phone can find the Pond before pairing, but it answers by authentic
 
 `lan_address` and `tailnet_address` are `null` when the Pond has no such route. Pairing material (the addresses and the `tls_spki_sha256` pin) is returned as `pairing` by the host-only `/handshake/pairing-code`, `GET` and `POST`.
 
+`"insecure_dev": true` appears only while the debug-build plaintext development
+listener runs (`POND_DEV_INSECURE_LAN=1`); the key is absent otherwise. See
+[the security posture](auth-network-posture.md).
+
 ---
 
 ### GET /test
