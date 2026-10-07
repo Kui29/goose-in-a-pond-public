@@ -1,10 +1,14 @@
-//! Travel MCP server: directions and ride-app links. The user opens each link and confirms in
-//! the app; nothing here books, pays or tracks.
+//! Travel MCP server: directions, ride-app links, and ride offers sent to the speaker's own phone.
+//! Nothing here books a ride: the member gets the fare and confirms on their phone.
 
-use pond_core::mcp::ports::notification::{MemberNotifier, Notification};
+use pond_core::mcp::ports::notification::{MemberDelivery, MemberNotifier, Notification};
+use pond_core::rides::ports::RideAccounts;
 use pond_core::security::ports::draft_authority::DraftAuthority;
 use pond_core::user_data::domain::profile::ProfileScope;
 use pond_core::user_data::ports::place_lookup::{PlaceFix, PlaceLookup};
+use pond_core::user_data::ports::settings::SettingsRepository;
+use pond_core::user_data::services::location::{self, Location};
+use pond_core::user_data::services::nearby::{self, NEAR_HOME_KM};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -17,7 +21,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use pond_core::mcp::domain::tool_group::TRAVEL_EXTENSION;
 
@@ -43,6 +47,15 @@ pub struct RideParams {
     pub pickup: Option<String>,
     /// uber (default) or bolt.
     pub app: Option<String>,
+    /// Catch-all for unexpected fields the model might send.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct BookRideParams {
+    pub destination: Option<String>,
     /// Catch-all for unexpected fields the model might send.
     #[serde(flatten)]
     #[schemars(skip)]
@@ -175,9 +188,15 @@ impl RideApp {
 #[derive(Clone)]
 pub struct TravelMcpServer {
     places: Option<Arc<dyn PlaceLookup>>,
+    /// Where home is, read per call; without it a name takes its best match anywhere.
+    settings: Option<Arc<dyn SettingsRepository + Send + Sync>>,
+    /// The home's country, keyed by the home it was learned for: learning it costs a lookup.
+    home_country: Arc<Mutex<Option<LearnedCountry>>>,
     /// Both set: links are also pushed to the speaker's own phones. Either unset: reply only.
-    authority: Option<Arc<dyn DraftAuthority>>,
-    notifier: Option<Arc<dyn MemberNotifier>>,
+    authority: Dep<dyn DraftAuthority>,
+    notifier: Dep<dyn MemberNotifier>,
+    /// Which members can book; unset means booking is not set up and `book_ride` says so.
+    ride_accounts: Dep<dyn RideAccounts>,
     #[allow(dead_code)] // accessed by rmcp's generated tool_handler code
     tool_router: ToolRouter<Self>,
 }
@@ -192,10 +211,22 @@ impl TravelMcpServer {
     pub fn new(places: Option<Arc<dyn PlaceLookup>>) -> Self {
         Self {
             places,
-            authority: None,
-            notifier: None,
+            settings: None,
+            home_country: Arc::new(Mutex::new(None)),
+            authority: Dep::Fixed(None),
+            notifier: Dep::Fixed(None),
+            ride_accounts: Dep::Fixed(None),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Match place names near the home in these settings rather than anywhere in the world.
+    pub fn with_home(
+        mut self,
+        settings: Option<Arc<dyn SettingsRepository + Send + Sync>>,
+    ) -> Self {
+        self.settings = settings;
+        self
     }
 
     pub fn with_phone_delivery(
@@ -203,8 +234,22 @@ impl TravelMcpServer {
         authority: Option<Arc<dyn DraftAuthority>>,
         notifier: Option<Arc<dyn MemberNotifier>>,
     ) -> Self {
-        self.authority = authority;
-        self.notifier = notifier;
+        self.authority = Dep::Fixed(authority);
+        self.notifier = Dep::Fixed(notifier);
+        self
+    }
+
+    pub fn with_ride_accounts(mut self, accounts: Option<Arc<dyn RideAccounts>>) -> Self {
+        self.ride_accounts = Dep::Fixed(accounts);
+        self
+    }
+
+    /// Read the speaker authority, member notifier and ride accounts from the process-wide
+    /// slots on every call, so ones installed after goose spawned this server are still used.
+    fn reading_installed_deps(mut self) -> Self {
+        self.authority = Dep::Installed(crate::speaker_authority);
+        self.notifier = Dep::Installed(crate::member_notifier);
+        self.ride_accounts = Dep::Installed(installed_ride_accounts);
         self
     }
 
@@ -218,6 +263,18 @@ their phone. Omit origin for their current location. Never invent routes or time
     ) -> Result<CallToolResult, ErrorData> {
         crate::set_current_tool("get_directions_link");
         Ok(self.directions_result(&ctx.meta, &params.0).await)
+    }
+
+    #[tool(description = "\
+Book an Uber for the person speaking: sends the trip to their own phone, which gets \
+the fare from where they are and books only when they confirm. Never claim a ride is booked.")]
+    async fn book_ride(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        params: Parameters<BookRideParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        crate::set_current_tool("book_ride");
+        Ok(self.book_result(&ctx.meta, &params.0).await)
     }
 
     #[tool(description = "\
@@ -260,10 +317,13 @@ impl TravelMcpServer {
         let pickup_point = match &pickup {
             None => RidePoint::MyLocation,
             Some(asked) => match self.resolve(asked).await {
-                Ok(fix) => RidePoint::Place {
-                    asked: asked.clone(),
-                    fix,
-                },
+                Ok(matched) => {
+                    notes.extend(matched.note(asked));
+                    RidePoint::Place {
+                        asked: asked.clone(),
+                        fix: matched.fix,
+                    }
+                }
                 Err(why) => {
                     notes.push(format!(
                         "Pickup is the phone's current location: {why} for \"{asked}\"."
@@ -279,10 +339,13 @@ impl TravelMcpServer {
                 None
             }
             Some(asked) => match self.resolve(asked).await {
-                Ok(fix) => Some(RidePoint::Place {
-                    asked: asked.clone(),
-                    fix,
-                }),
+                Ok(matched) => {
+                    notes.extend(matched.note(asked));
+                    Some(RidePoint::Place {
+                        asked: asked.clone(),
+                        fix: matched.fix,
+                    })
+                }
                 Err(why) => {
                     notes.push(format!("The drop-off is empty: {why} for \"{asked}\"."));
                     None
@@ -319,19 +382,139 @@ impl TravelMcpServer {
         CallToolResult::success(vec![Content::text(lines.join("\n"))])
     }
 
-    async fn resolve(&self, query: &str) -> Result<PlaceFix, String> {
+    /// The place `query` names: the match nearest home within [`NEAR_HOME_KM`], or with no
+    /// home set, the best match anywhere. `Err` says why there is none.
+    async fn resolve(&self, query: &str) -> Result<Matched, String> {
         let Some(places) = &self.places else {
             return Err("this pond has no place lookup".to_string());
         };
-        places.by_name(query).await.map_err(|e| {
-            tracing::debug!(error = %e, "travel: place lookup failed");
-            // The geocoder's empty-result error; anything else (an offline refusal) is a failure.
-            if format!("{e:#}").contains("no location found") {
-                "no place matched".to_string()
-            } else {
-                "the place lookup failed".to_string()
+        let home = self.home().await;
+        let found = match &home {
+            Some(home) => {
+                let country = self.home_country(places.as_ref(), home).await;
+                nearby::near_home(
+                    places.as_ref(),
+                    query,
+                    (home.latitude, home.longitude),
+                    country.as_deref(),
+                )
+                .await
+                .map(|fix| {
+                    fix.map(|fix| Matched {
+                        fix,
+                        anywhere: false,
+                    })
+                })
             }
+            None => places.candidates(query, None, 1).await.map(|found| {
+                found.into_iter().next().map(|c| Matched {
+                    fix: c.fix,
+                    anywhere: true,
+                })
+            }),
+        };
+        match found {
+            Ok(Some(matched)) => Ok(matched),
+            Ok(None) if home.is_some() => Err(format!(
+                "no place matched within {NEAR_HOME_KM:.0} km of home"
+            )),
+            Ok(None) => Err("no place matched".to_string()),
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "travel: place lookup failed");
+                Err("the place lookup failed".to_string())
+            }
+        }
+    }
+
+    /// Where the household is, when the pond knows its coordinates.
+    async fn home(&self) -> Option<Location> {
+        let settings = match self.settings.as_ref()?.get().await {
+            Ok(settings) => settings,
+            Err(e) => {
+                tracing::warn!(error = %e, "travel: could not read where home is");
+                return None;
+            }
+        };
+        let home = location::resolve(&settings);
+        home.has_coordinates().then_some(home)
+    }
+
+    /// The home's country, learned once per home; `None` when it cannot be told.
+    async fn home_country(&self, places: &dyn PlaceLookup, home: &Location) -> Option<String> {
+        let key = format!("{:.4},{:.4},{}", home.latitude, home.longitude, home.name);
+        if let Some(learned) = &*self.lock_home_country() {
+            if learned.home == key {
+                return learned.code.clone();
+            }
+        }
+        match nearby::home_country(places, home).await {
+            Ok(code) => {
+                *self.lock_home_country() = Some(LearnedCountry {
+                    home: key,
+                    code: code.clone(),
+                });
+                code
+            }
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "travel: could not learn home's country");
+                None
+            }
+        }
+    }
+
+    fn lock_home_country(&self) -> std::sync::MutexGuard<'_, Option<LearnedCountry>> {
+        // A poisoned cache holds a whole value either way: every write is one assignment.
+        self.home_country.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A home's country, and the home it was learned for.
+struct LearnedCountry {
+    home: String,
+    code: Option<String>,
+}
+
+/// A place a name was matched to.
+struct Matched {
+    fix: PlaceFix,
+    /// No home is set, so this is the best match anywhere in the world.
+    anywhere: bool,
+}
+
+impl Matched {
+    fn note(&self, asked: &str) -> Option<String> {
+        self.anywhere.then(|| {
+            format!(
+                "No home location is set on this pond, so \"{asked}\" was matched to the best \
+                 place of that name anywhere."
+            )
         })
+    }
+}
+
+/// A dependency of the server: given at construction, or read from its process-wide slot each
+/// time a tool runs. Goose keeps the first server it spawns for the life of the process, and that
+/// can be before startup has installed the slots.
+enum Dep<T: ?Sized> {
+    Fixed(Option<Arc<T>>),
+    Installed(fn() -> Option<Arc<T>>),
+}
+
+impl<T: ?Sized> Dep<T> {
+    fn get(&self) -> Option<Arc<T>> {
+        match self {
+            Self::Fixed(dep) => dep.clone(),
+            Self::Installed(read) => read(),
+        }
+    }
+}
+
+impl<T: ?Sized> Clone for Dep<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Fixed(dep) => Self::Fixed(dep.clone()),
+            Self::Installed(read) => Self::Installed(*read),
+        }
     }
 }
 
@@ -388,6 +571,27 @@ struct PhoneLink {
     label: &'static str,
 }
 
+/// Send to one member's own devices, never a broadcast.
+async fn push(
+    notifier: &dyn MemberNotifier,
+    profile_id: &str,
+    category: &str,
+    title: String,
+    body: String,
+    data: serde_json::Value,
+) -> MemberDelivery {
+    let notification = Notification {
+        id: uuid::Uuid::new_v4().to_string(),
+        target: profile_id.to_string(),
+        category: category.to_string(),
+        title,
+        body,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        data: Some(data),
+    };
+    notifier.notify_member(profile_id, notification).await
+}
+
 impl TravelMcpServer {
     /// The body of `get_directions_link`, apart from the rmcp wrapper so tests can call it.
     pub async fn directions_result(
@@ -406,43 +610,157 @@ impl TravelMcpServer {
     }
 
     /// Push `link` to the speaker's own phones. `None` when delivery isn't wired; otherwise the
-    /// line saying where it went. Only a named member is pushed to: a household or guest speaker
-    /// has no phone that is theirs, and a broadcast would put one person's trip on every phone.
+    /// line saying where it went. Only one member is ever pushed to (see [`Self::speaker`]): a
+    /// broadcast would put one person's trip on every phone.
     async fn deliver(&self, meta: &Meta, link: PhoneLink) -> Option<String> {
-        let (Some(authority), Some(notifier)) = (&self.authority, &self.notifier) else {
+        let (Some(_), Some(notifier)) = (self.authority.get(), self.notifier.get()) else {
             return None;
         };
-        let Some(session) = crate::session_meta::session_from_meta(meta) else {
-            return Some("Not sent to a phone: this call carries no session.".to_string());
+        let profile_id = match self.speaker(meta).await {
+            Ok(id) => id,
+            Err(why) => return Some(format!("Not sent to a phone: {why}.")),
         };
-        let profile_id =
-            match authority.actor_for_engine_session(&session).await {
-                Some((ProfileScope::Owner(id), _)) => id,
-                _ => return Some(
-                    "Not sent to a phone: the speaker is not identified as one household member."
-                        .to_string(),
-                ),
-            };
-        let notification = Notification {
-            id: uuid::Uuid::new_v4().to_string(),
-            target: profile_id.clone(),
-            category: "info".to_string(),
-            title: link.title,
-            body: link.body,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            data: Some(serde_json::json!({
-                "action": "open_url",
-                "kind": link.kind,
-                "url": link.url,
-                "label": link.label,
-            })),
-        };
-        let reached = notifier.notify_member(&profile_id, notification).await;
-        Some(match reached.len() {
-            0 => "Not sent to a phone: the speaker has no paired phone of their own.".to_string(),
-            1 => "Also sent to the speaker's phone.".to_string(),
-            n => format!("Also sent to the speaker's {n} paired devices."),
+        let data = serde_json::json!({
+            "action": "open_url",
+            "kind": link.kind,
+            "url": link.url,
+            "label": link.label,
+        });
+        let delivery = push(
+            notifier.as_ref(),
+            &profile_id,
+            "info",
+            link.title,
+            link.body,
+            data,
+        )
+        .await;
+        Some(match delivery {
+            MemberDelivery::Reached(devices) if devices.len() == 1 => {
+                "Also sent to the speaker's phone.".to_string()
+            }
+            MemberDelivery::Reached(devices) => {
+                format!(
+                    "Also sent to the speaker's {} paired devices.",
+                    devices.len()
+                )
+            }
+            MemberDelivery::NoPhone => {
+                "Not sent to a phone: the speaker has no paired phone of their own.".to_string()
+            }
+            MemberDelivery::Failed(why) => {
+                tracing::warn!(error = %why, "travel: could not send the link to the speaker's phone");
+                "Not sent to a phone: sending to the speaker's phone failed on the pond."
+                    .to_string()
+            }
         })
+    }
+
+    /// The household member speaking in this call, or why there is none. An unidentified
+    /// speaker in a one-member household can only be that member; a guest is nobody's.
+    async fn speaker(&self, meta: &Meta) -> Result<String, &'static str> {
+        const NOT_ONE_MEMBER: &str = "the speaker is not identified as one household member";
+        let authority = self
+            .authority
+            .get()
+            .ok_or("this pond cannot tell who is speaking")?;
+        let session =
+            crate::session_meta::session_from_meta(meta).ok_or("this call carries no session")?;
+        match authority.actor_for_engine_session(&session).await {
+            Some((ProfileScope::Owner(id), _)) => Ok(id),
+            Some((ProfileScope::Household, _)) => {
+                authority.sole_member().await.ok_or(NOT_ONE_MEMBER)
+            }
+            _ => Err(NOT_ONE_MEMBER),
+        }
+    }
+
+    /// The body of `book_ride`, apart from the rmcp wrapper so tests can call it.
+    pub async fn book_result(&self, meta: &Meta, params: &BookRideParams) -> CallToolResult {
+        let fail = |text: String| CallToolResult::error(vec![Content::text(text)]);
+        let Some(accounts) = self.ride_accounts.get() else {
+            return fail(
+                "Booking rides is not set up on this pond, so no ride offer was sent.".into(),
+            );
+        };
+        let Some(notifier) = self.notifier.get() else {
+            return fail("This pond cannot send to phones, so no ride offer was sent.".into());
+        };
+        let Some(destination) = text_param(&params.destination, &params.extra, DESTINATION_KEYS)
+        else {
+            return fail("No destination was given, so no ride offer was sent.".into());
+        };
+        let profile_id = match self.speaker(meta).await {
+            Ok(id) => id,
+            Err(why) => return fail(format!("No ride offer was sent: {why}.")),
+        };
+        match accounts.is_connected(&profile_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return fail(
+                    "This member has not connected Uber on this pond (Settings, Accounts), so no \
+                     ride offer was sent."
+                        .into(),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "travel: could not read the member's Uber connection");
+                return fail(
+                    "Could not read this member's Uber connection; no ride offer was sent.".into(),
+                );
+            }
+        }
+        let matched = match self.resolve(&destination).await {
+            Ok(matched) => matched,
+            Err(why) => {
+                return fail(format!(
+                    "No ride offer was sent: {why} for \"{destination}\"."
+                ))
+            }
+        };
+        let note = matched.note(&destination);
+        let fix = matched.fix;
+
+        let data = serde_json::json!({
+            "action": "ride_offer",
+            "provider": "uber",
+            "dropoff": {"name": fix.name, "latitude": fix.latitude, "longitude": fix.longitude},
+            "label": "Get a fare",
+        });
+        let delivery = push(
+            notifier.as_ref(),
+            &profile_id,
+            "action_required",
+            format!("Ride to {}?", fix.name),
+            "Get an Uber fare from where you are. Nothing is booked until you confirm.".into(),
+            data,
+        )
+        .await;
+        match delivery {
+            MemberDelivery::Reached(_) => {}
+            MemberDelivery::NoPhone => {
+                return fail(
+                    "No ride offer was sent: the speaker has no paired phone of their own.".into(),
+                )
+            }
+            MemberDelivery::Failed(why) => {
+                tracing::warn!(error = %why, "travel: could not send the ride offer");
+                return fail(
+                    "No ride offer was sent: sending to the speaker's phone failed on the pond."
+                        .into(),
+                );
+            }
+        }
+        let mut text = format!(
+            "Sent a ride offer to the speaker's phone: a ride to {} (matched from \"{destination}\"). \
+             The phone gets the fare from where it is. Nothing is booked until they confirm on the phone.",
+            fix.name
+        );
+        if let Some(note) = note {
+            text.push('\n');
+            text.push_str(&note);
+        }
+        CallToolResult::success(vec![Content::text(text)])
     }
 }
 
@@ -487,8 +805,10 @@ impl ServerHandler for TravelMcpServer {
                  Tools:\n\
                  - get_directions_link: Google Maps and Apple Maps directions to a place.\n\
                  - get_ride_link: an Uber link with pickup and drop-off filled in. Bolt has no \
-                 such link.\n\n\
-                 Nothing here books, pays for or tracks a ride.",
+                 such link.\n\
+                 - book_ride: an Uber ride offer on the speaker's own phone, booked only when \
+                 they confirm there.\n\n\
+                 Nothing here books a ride without the member's confirmation on their phone.",
             )
     }
 }
@@ -500,13 +820,27 @@ use tokio::io::DuplexStream;
 
 struct TravelDeps {
     places: Option<Arc<dyn PlaceLookup>>,
+    settings: Option<Arc<dyn SettingsRepository + Send + Sync>>,
 }
 
 static TRAVEL_DEPS: OnceLock<TravelDeps> = OnceLock::new();
+static RIDE_ACCOUNTS: OnceLock<Arc<dyn RideAccounts>> = OnceLock::new();
 
-/// Install the place lookup. Call once at startup.
-pub fn init_travel_deps(places: Option<Arc<dyn PlaceLookup>>) {
-    let _ = TRAVEL_DEPS.set(TravelDeps { places });
+/// Turn on `book_ride`. Call once at startup, when a ride provider is configured.
+pub fn init_ride_accounts(accounts: Arc<dyn RideAccounts>) {
+    let _ = RIDE_ACCOUNTS.set(accounts);
+}
+
+fn installed_ride_accounts() -> Option<Arc<dyn RideAccounts>> {
+    RIDE_ACCOUNTS.get().cloned()
+}
+
+/// Install the place lookup and the settings that say where home is. Call once at startup.
+pub fn init_travel_deps(
+    places: Option<Arc<dyn PlaceLookup>>,
+    settings: Option<Arc<dyn SettingsRepository + Send + Sync>>,
+) {
+    let _ = TRAVEL_DEPS.set(TravelDeps { places, settings });
 }
 
 /// Spawn function compatible with Goose's `SpawnServerFn` type.
@@ -519,42 +853,123 @@ pub fn spawn_travel_server(reader: DuplexStream, writer: DuplexStream) {
         return;
     };
     let server = TravelMcpServer::new(deps.places.clone())
-        .with_phone_delivery(crate::speaker_authority(), crate::member_notifier());
+        .with_home(deps.settings.clone())
+        .reading_installed_deps();
     crate::serve_builtin(TRAVEL_EXTENSION, server, reader, writer);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
+/// Test doubles shared by the travel test modules.
 #[cfg(test)]
-mod tests {
+mod fakes {
     use super::*;
     use async_trait::async_trait;
+    use pond_core::user_data::domain::settings::Settings;
+    use pond_core::user_data::ports::place_lookup::PlaceCandidate;
 
-    struct StubPlaces;
-
-    #[async_trait]
-    impl PlaceLookup for StubPlaces {
-        async fn by_name(&self, query: &str) -> anyhow::Result<PlaceFix> {
-            match query {
-                "JKIA" => Ok(PlaceFix {
-                    name: "Jomo Kenyatta International Airport, Kenya".to_string(),
-                    latitude: -1.319167,
-                    longitude: 36.9275,
-                    timezone: None,
-                }),
-                "Westlands" => Ok(PlaceFix {
-                    name: "Westlands, Kenya".to_string(),
-                    latitude: -1.2676,
-                    longitude: 36.8108,
-                    timezone: None,
-                }),
-                _ => anyhow::bail!("no location found for '{query}'"),
-            }
+    fn candidate(name: &str, latitude: f64, longitude: f64, country: &str) -> PlaceCandidate {
+        PlaceCandidate {
+            fix: PlaceFix {
+                name: name.to_string(),
+                latitude,
+                longitude,
+                timezone: None,
+            },
+            country_code: Some(country.to_string()),
         }
     }
 
+    /// Ranks like the real geocoder: a namesake far away comes before the one near home. It
+    /// ignores the country asked for, so only picking by distance can find the near one.
+    #[derive(Default)]
+    pub struct Places {
+        asked: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl Places {
+        /// Every `(name, country_code)` searched, in order.
+        pub fn asked(&self) -> Vec<(String, Option<String>)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl PlaceLookup for Places {
+        async fn by_name(&self, query: &str) -> anyhow::Result<PlaceFix> {
+            anyhow::bail!("travel matches names through candidates(), not by_name({query})")
+        }
+
+        async fn candidates(
+            &self,
+            query: &str,
+            country_code: Option<&str>,
+            limit: usize,
+        ) -> anyhow::Result<Vec<PlaceCandidate>> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((query.to_string(), country_code.map(str::to_string)));
+            let all = match query {
+                "JKIA" => vec![
+                    candidate("Jkia Hill, Tanzania", -6.8, 39.2, "TZ"),
+                    candidate(
+                        "Jomo Kenyatta International Airport, Kenya",
+                        -1.319167,
+                        36.9275,
+                        "KE",
+                    ),
+                ],
+                "Westlands" => vec![
+                    candidate("Westlands, Jamaica", 18.03, -76.79, "JM"),
+                    candidate("Westlands, Kenya", -1.2676, 36.8108, "KE"),
+                ],
+                "Kisumu" => vec![candidate("Kisumu, Kenya", -0.1022, 34.7617, "KE")],
+                "Nairobi" => vec![candidate("Nairobi, Kenya", -1.2833, 36.8167, "KE")],
+                _ => Vec::new(),
+            };
+            Ok(all.into_iter().take(limit).collect())
+        }
+    }
+
+    /// Settings whose home is the given place, or unset.
+    pub struct Home(pub Option<(&'static str, f64, f64)>);
+
+    /// A pond at home in Nairobi.
+    pub fn nairobi() -> Arc<Home> {
+        Arc::new(Home(Some(("Nairobi, Kenya", -1.286, 36.817))))
+    }
+
+    #[async_trait]
+    impl SettingsRepository for Home {
+        async fn get(&self) -> anyhow::Result<Settings> {
+            let mut settings = Settings::default();
+            if let Some((name, latitude, longitude)) = self.0 {
+                settings.weather_location_name = name.to_string();
+                settings.weather_latitude = latitude;
+                settings.weather_longitude = longitude;
+            }
+            Ok(settings)
+        }
+        async fn update(&self, _: &Settings) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_key(&self, _: &str) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+        async fn set_key(&self, _: &str, _: String) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fakes::{nairobi, Home, Places};
+    use super::*;
+
     fn server() -> TravelMcpServer {
-        TravelMcpServer::new(Some(Arc::new(StubPlaces)))
+        TravelMcpServer::new(Some(Arc::new(Places::default()))).with_home(Some(nairobi()))
     }
 
     fn text(result: &CallToolResult) -> String {
@@ -686,6 +1101,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_namesake_near_home_beats_the_geocoders_first_match() {
+        let out = text(
+            &server()
+                .ride_result(&Meta::new(), &ride(Some("Westlands"), None, None))
+                .await,
+        );
+        assert!(out.contains("dropoff[latitude]=-1.267600"), "{out}");
+        assert!(out.contains("Westlands, Kenya"), "{out}");
+        assert!(!out.contains("Jamaica"), "{out}");
+        assert!(!out.contains("No home location"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_place_matching_only_far_from_home_is_no_match() {
+        let result = server()
+            .ride_result(&Meta::new(), &ride(Some("Kisumu"), None, None))
+            .await;
+        let out = text(&result);
+        assert!(!out.contains("dropoff["), "{out}");
+        assert!(
+            out.contains("no place matched within 50 km of home for \"Kisumu\""),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_home_the_best_match_anywhere_is_used_and_the_result_says_so() {
+        let out = text(
+            &TravelMcpServer::new(Some(Arc::new(Places::default())))
+                .with_home(Some(Arc::new(Home(None))))
+                .ride_result(&Meta::new(), &ride(Some("Westlands"), None, None))
+                .await,
+        );
+        assert!(out.contains("Westlands, Jamaica"), "{out}");
+        assert!(
+            out.contains("No home location is set on this pond"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_homes_country_is_learned_once_and_then_searched() {
+        let places = Arc::new(Places::default());
+        let server = TravelMcpServer::new(Some(places.clone())).with_home(Some(nairobi()));
+        server
+            .ride_result(&Meta::new(), &ride(Some("Westlands"), None, None))
+            .await;
+        server
+            .ride_result(&Meta::new(), &ride(Some("JKIA"), None, None))
+            .await;
+        assert_eq!(
+            places.asked(),
+            vec![
+                ("Nairobi".to_string(), None),
+                ("Westlands".to_string(), Some("KE".to_string())),
+                ("JKIA".to_string(), Some("KE".to_string())),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn without_a_place_lookup_the_link_still_opens_uber() {
         let out = text(
             &TravelMcpServer::new(None)
@@ -745,7 +1221,11 @@ mod delivery_tests {
     use pond_core::security::ports::policy::{PolicyDecision, PolicyMode};
     use pond_core::user_data::domain::session::IdentificationSource;
 
-    struct FixedSpeaker(Option<ProfileScope>);
+    /// Resolves every session to `scope`; `sole` is the household's only member, if it has one.
+    struct FixedSpeaker {
+        scope: Option<ProfileScope>,
+        sole: Option<&'static str>,
+    }
 
     #[async_trait]
     impl DraftAuthority for FixedSpeaker {
@@ -756,9 +1236,12 @@ mod delivery_tests {
             &self,
             _engine_session_id: &str,
         ) -> Option<(ProfileScope, IdentificationSource)> {
-            self.0
+            self.scope
                 .clone()
                 .map(|scope| (scope, IdentificationSource::Explicit))
+        }
+        async fn sole_member(&self) -> Option<String> {
+            self.sole.map(str::to_string)
         }
         async fn audit(&self, _s: &str, _a: &str, _d: &PolicyDecision) {}
     }
@@ -773,8 +1256,16 @@ mod delivery_tests {
     }
 
     fn server(speaker: Option<ProfileScope>, notifier: Arc<MockMemberNotifier>) -> TravelMcpServer {
+        in_household(speaker, None, notifier)
+    }
+
+    fn in_household(
+        scope: Option<ProfileScope>,
+        sole: Option<&'static str>,
+        notifier: Arc<MockMemberNotifier>,
+    ) -> TravelMcpServer {
         TravelMcpServer::new(None)
-            .with_phone_delivery(Some(Arc::new(FixedSpeaker(speaker))), Some(notifier))
+            .with_phone_delivery(Some(Arc::new(FixedSpeaker { scope, sole })), Some(notifier))
     }
 
     fn directions_to(place: &str) -> DirectionsParams {
@@ -837,15 +1328,32 @@ mod delivery_tests {
     }
 
     #[tokio::test]
-    async fn household_and_guest_speakers_are_never_pushed_to() {
-        for scope in [
-            Some(ProfileScope::Household),
-            Some(ProfileScope::Guest),
-            None,
-        ] {
+    async fn a_one_member_household_is_pushed_to_its_only_member() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        let out = text(
+            &in_household(Some(ProfileScope::Household), Some("liz"), notifier.clone())
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(out.contains("Also sent to the speaker's phone."), "{out}");
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "liz");
+    }
+
+    #[tokio::test]
+    async fn a_household_of_several_a_guest_or_nobody_is_never_pushed_to() {
+        let cases = [
+            // Several members: the household is nobody in particular.
+            (Some(ProfileScope::Household), None),
+            // A guest is nobody's, even in a one-member pond.
+            (Some(ProfileScope::Guest), Some("liz")),
+            (None, Some("liz")),
+        ];
+        for (scope, sole) in cases {
             let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
             let out = text(
-                &server(scope.clone(), notifier.clone())
+                &in_household(scope.clone(), sole, notifier.clone())
                     .directions_result(&meta(), &directions_to("Kisumu"))
                     .await,
             );
@@ -866,6 +1374,22 @@ mod delivery_tests {
     }
 
     #[tokio::test]
+    async fn a_delivery_that_failed_is_not_reported_as_no_phone() {
+        let notifier = Arc::new(
+            MockMemberNotifier::new()
+                .with_devices("liz", &["liz-phone"])
+                .failing_next(1),
+        );
+        let out = text(
+            &server(Some(ProfileScope::Owner("liz".into())), notifier)
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(out.contains("failed on the pond"), "{out}");
+        assert!(!out.contains("no paired phone"), "{out}");
+    }
+
+    #[tokio::test]
     async fn a_call_without_a_session_is_not_pushed() {
         let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
         let out = text(
@@ -877,6 +1401,60 @@ mod delivery_tests {
         assert!(out.contains("carries no session"), "{out}");
     }
 
+    /// A schedule can make goose spawn this server before startup installs these.
+    #[tokio::test]
+    async fn deps_installed_after_the_server_was_built_are_used() {
+        static NOTIFIER: OnceLock<Arc<dyn MemberNotifier>> = OnceLock::new();
+        static AUTHORITY: OnceLock<Arc<dyn DraftAuthority>> = OnceLock::new();
+        let mut server = TravelMcpServer::new(None);
+        server.notifier = Dep::Installed(|| NOTIFIER.get().cloned());
+        server.authority = Dep::Installed(|| AUTHORITY.get().cloned());
+
+        let before = text(
+            &server
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(!before.contains("sent to"), "{before}");
+
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        assert!(NOTIFIER.set(notifier.clone()).is_ok());
+        assert!(AUTHORITY
+            .set(Arc::new(FixedSpeaker {
+                scope: Some(ProfileScope::Owner("liz".into())),
+                sole: None,
+            }))
+            .is_ok());
+        let after = text(
+            &server
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(
+            after.contains("Also sent to the speaker's phone."),
+            "{after}"
+        );
+        assert_eq!(notifier.sent().len(), 1);
+    }
+
+    #[test]
+    fn the_spawned_server_reads_its_deps_when_a_tool_runs() {
+        let server = TravelMcpServer::new(None).reading_installed_deps();
+        assert!(matches!(server.authority, Dep::Installed(_)));
+        assert!(matches!(server.notifier, Dep::Installed(_)));
+        assert!(matches!(server.ride_accounts, Dep::Installed(_)));
+        let spawn = include_str!("travel.rs")
+            .split("pub fn spawn_travel_server")
+            .nth(1)
+            .expect("spawn_travel_server not found");
+        let body = &spawn[..spawn.find("serve_builtin").unwrap_or(spawn.len())];
+        assert!(
+            body.contains(".reading_installed_deps()"),
+            "spawn_travel_server copies its deps at spawn; a server spawned before startup \
+             installs them keeps None for the life of the process"
+        );
+    }
+
     #[tokio::test]
     async fn without_delivery_wired_the_reply_says_nothing_about_phones() {
         let out = text(
@@ -885,6 +1463,198 @@ mod delivery_tests {
                 .await,
         );
         assert!(!out.contains("sent to"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod booking_tests {
+    //! `book_ride` sends an offer to the speaker's own phone and books nothing itself.
+
+    use super::fakes::{nairobi, Places};
+    use super::*;
+    use async_trait::async_trait;
+    use pond_core::mcp::mocks::mock_member_notifier::MockMemberNotifier;
+    use pond_core::security::ports::policy::{PolicyDecision, PolicyMode};
+    use pond_core::user_data::domain::session::IdentificationSource;
+
+    /// Resolves every session to its scope, in a household of several unless `.1` names the
+    /// only member.
+    struct Speaker(Option<ProfileScope>, Option<&'static str>);
+
+    #[async_trait]
+    impl DraftAuthority for Speaker {
+        async fn policy_mode(&self) -> PolicyMode {
+            PolicyMode::Audit
+        }
+        async fn actor_for_engine_session(
+            &self,
+            _s: &str,
+        ) -> Option<(ProfileScope, IdentificationSource)> {
+            self.0.clone().map(|s| (s, IdentificationSource::Explicit))
+        }
+        async fn sole_member(&self) -> Option<String> {
+            self.1.map(str::to_string)
+        }
+        async fn audit(&self, _s: &str, _a: &str, _d: &PolicyDecision) {}
+    }
+
+    struct Connected(&'static [&'static str]);
+
+    #[async_trait]
+    impl RideAccounts for Connected {
+        async fn is_connected(&self, profile_id: &str) -> anyhow::Result<bool> {
+            Ok(self.0.contains(&profile_id))
+        }
+    }
+
+    fn meta() -> Meta {
+        let mut m = Meta::new();
+        m.0.insert(
+            crate::session_meta::SESSION_ID_META_KEY.to_string(),
+            serde_json::json!("engine-1"),
+        );
+        m
+    }
+
+    fn server(
+        speaker: Option<ProfileScope>,
+        connected: &'static [&'static str],
+        notifier: Arc<MockMemberNotifier>,
+    ) -> TravelMcpServer {
+        server_for(Speaker(speaker, None), connected, notifier)
+    }
+
+    fn server_for(
+        speaker: Speaker,
+        connected: &'static [&'static str],
+        notifier: Arc<MockMemberNotifier>,
+    ) -> TravelMcpServer {
+        TravelMcpServer::new(Some(Arc::new(Places::default())))
+            .with_home(Some(nairobi()))
+            .with_phone_delivery(Some(Arc::new(speaker)), Some(notifier))
+            .with_ride_accounts(Some(Arc::new(Connected(connected))))
+    }
+
+    fn to(place: &str) -> BookRideParams {
+        BookRideParams {
+            destination: Some(place.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn liz() -> Option<ProfileScope> {
+        Some(ProfileScope::Owner("liz".into()))
+    }
+
+    #[tokio::test]
+    async fn the_offer_goes_to_the_speakers_phone_with_the_matched_drop_off() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        let result = server(liz(), &["liz"], notifier.clone())
+            .book_result(&meta(), &to("JKIA"))
+            .await;
+        assert_ne!(result.is_error, Some(true), "{}", text(&result));
+        assert!(text(&result).contains("Nothing is booked"));
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "liz");
+        assert_eq!(sent[0].1.category, "action_required");
+        let data = sent[0].1.data.as_ref().unwrap();
+        assert_eq!(data["action"], "ride_offer");
+        assert_eq!(data["dropoff"]["latitude"], -1.319167);
+    }
+
+    #[tokio::test]
+    async fn a_one_member_household_offers_the_ride_to_its_only_member() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        let result = server_for(
+            Speaker(Some(ProfileScope::Household), Some("liz")),
+            &["liz"],
+            notifier.clone(),
+        )
+        .book_result(&meta(), &to("JKIA"))
+        .await;
+        assert_ne!(result.is_error, Some(true), "{}", text(&result));
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "liz");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_sent_when_booking_cannot_happen() {
+        let cases: [(Option<ProfileScope>, &'static [&'static str], &str, &str); 4] = [
+            (
+                Some(ProfileScope::Guest),
+                &["liz"],
+                "JKIA",
+                "not identified",
+            ),
+            (
+                Some(ProfileScope::Household),
+                &["liz"],
+                "JKIA",
+                "not identified",
+            ),
+            (liz(), &[], "JKIA", "has not connected Uber"),
+            (liz(), &["liz"], "my aunt's place", "no place matched"),
+        ];
+        for (speaker, connected, place, says) in cases {
+            let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+            let result = server(speaker.clone(), connected, notifier.clone())
+                .book_result(&meta(), &to(place))
+                .await;
+            assert_eq!(result.is_error, Some(true), "{speaker:?} {place}");
+            assert!(text(&result).contains(says), "{}", text(&result));
+            assert!(
+                notifier.sent().is_empty(),
+                "{speaker:?} {place} was sent an offer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_member_without_a_phone_or_a_pond_without_booking_says_so() {
+        let no_phone = Arc::new(MockMemberNotifier::new());
+        let result = server(liz(), &["liz"], no_phone)
+            .book_result(&meta(), &to("JKIA"))
+            .await;
+        assert!(
+            text(&result).contains("no paired phone"),
+            "{}",
+            text(&result)
+        );
+
+        let unset = TravelMcpServer::new(Some(Arc::new(Places::default())))
+            .book_result(&meta(), &to("JKIA"))
+            .await;
+        assert!(text(&unset).contains("not set up"), "{}", text(&unset));
+    }
+
+    #[tokio::test]
+    async fn an_offer_that_failed_to_send_says_so() {
+        let notifier = Arc::new(
+            MockMemberNotifier::new()
+                .with_devices("liz", &["liz-phone"])
+                .failing_next(1),
+        );
+        let result = server(liz(), &["liz"], notifier)
+            .book_result(&meta(), &to("JKIA"))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            text(&result).contains("failed on the pond"),
+            "{}",
+            text(&result)
+        );
     }
 }
 

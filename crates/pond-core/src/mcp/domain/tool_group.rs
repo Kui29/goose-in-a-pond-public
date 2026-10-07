@@ -162,6 +162,8 @@ pub fn groups_denied_to_guests() -> &'static [&'static str] {
         "giap-context",
         // Not about personal data: `delegate` runs an autonomous agent on the household's one GPU.
         ORCHESTRATOR_EXTENSION,
+        // Rides on a member's own Uber account, and every place lookup leaves the pond.
+        TRAVEL_EXTENSION,
     ]
 }
 
@@ -179,6 +181,8 @@ pub fn groups_denied_to_subagents() -> &'static [&'static str] {
         "giap-schedule",
         // Depth already refuses it; not offering it saves a small model's turn budget.
         ORCHESTRATOR_EXTENSION,
+        // `book_ride` puts a ride offer on a member's phone, with no approval path.
+        TRAVEL_EXTENSION,
     ]
 }
 
@@ -427,6 +431,21 @@ mod guest_denylist_tests {
             "{ORCHESTRATOR_EXTENSION} must be withheld from guests: delegating starts minutes of \
              unattended agent work on the household's own GPU, which an unidentified speaker has \
              no business commanding"
+        );
+    }
+
+    /// Neither list backstops the other: each must name travel itself.
+    #[test]
+    fn neither_a_guest_nor_a_subagent_is_offered_travel() {
+        assert!(
+            groups_denied_to_subagents().contains(&TRAVEL_EXTENSION),
+            "{TRAVEL_EXTENSION} must be withheld from subagents: book_ride sends a ride offer to \
+             a member's phone, and a subagent has no identity or approval path"
+        );
+        assert!(
+            groups_denied_to_guests().contains(&TRAVEL_EXTENSION),
+            "{TRAVEL_EXTENSION} must be withheld from guests: its rides go on a member's own Uber \
+             account, and its place lookups leave the pond"
         );
     }
 

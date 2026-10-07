@@ -27,7 +27,7 @@ and a privacy footprint, below.
 | Shared signing crate | `services/pondcredentials/token` (`pond-apple-token`) | Normalises a pasted `.p8`, signs the ES256 token, refuses a lifetime past Apple's ceiling. Used by **both** sides, so they cannot drift. |
 | The service | `services/pondcredentials/server` | `POST /v1/musickit/developer-token`. Fails to start on a missing setting or a key that cannot sign. |
 | The pond's client | `crates/pond-api/src/musickit.rs` | A stored local key wins; else, when a service address is set, fetch, cache, and serve. |
-| Uber sign-in relay | `services/pondcredentials/server/src/uber.rs` | Optional. `GET /v1/uber/client`, `POST /v1/uber/token`, `POST /v1/uber/refresh`: adds Jarida's Uber client secret to a pond's code exchange or refresh and returns Uber's tokens. Off (503) unless `UBER_CLIENT_ID` and `UBER_CLIENT_SECRET_FILE` are set. |
+| Uber sign-in relay | `services/pondcredentials/server/src/uber.rs` | Optional. `GET /v1/uber/client`, `POST /v1/uber/token`, `POST /v1/uber/refresh`: adds Jarida's Uber client secret to a pond's code exchange or refresh and returns Uber's tokens. Uber's refusal (a 4xx with an OAuth `error`) comes back as 400 with `uber_error`; a 429, a 5xx or an unreadable reply is a 502, so a pond never takes Uber being down for a refused sign-in. Off (503) unless `UBER_CLIENT_ID` and `UBER_CLIENT_SECRET_FILE` are set. |
 | The deploy kit | `deploy/pondcredentials/` | Dockerfile, compose (plus `compose.uber.yaml` for the relay), Caddy, and a runbook with the `doctl` steps. |
 
 The service lives in its own Cargo workspace so a Docker image can copy only that directory, without
@@ -58,7 +58,7 @@ what the hosting provider's network keeps.
 refresh, and a secret cannot ship in every pond, so those two requests pass through here. That means
 a member's Uber authorization code, access token and refresh token **pass through this process**.
 It keeps none of them: nothing is written, nothing is logged (a refusal logs Uber's error code and
-HTTP status only), replies are `Cache-Control: no-store`, and only the four token fields a pond uses
+HTTP status only, an unusable reply its status only), replies are `Cache-Control: no-store`, and only the four token fields a pond uses
 are passed back. It accepts only a pond's own loopback callback as the return address, so it cannot
 be used to exchange codes issued to another site. The tokens are kept on the pond.
 

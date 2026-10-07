@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use pond_core::mcp::ports::notification::{MemberNotifier, Notification, NotificationSender};
+use pond_core::mcp::ports::notification::{
+    MemberDelivery, MemberNotifier, Notification, NotificationSender,
+};
 use pond_core::mcp::ports::notification_queue::NotificationQueueRepository;
 use pond_core::mcp::ports::notification_relay::NotificationRelay;
 use pond_core::user_data::ports::device_attribution::{
@@ -47,6 +49,32 @@ pub struct ProfileDeliveryReport {
 impl ProfileDeliveryReport {
     pub fn reached_nobody(&self) -> bool {
         self.queued.is_empty()
+    }
+
+    /// The outcome as a member-addressed caller needs it: a phone of theirs, none, or a fault.
+    pub fn outcome(&self) -> MemberDelivery {
+        match &self.plan {
+            TargetedDelivery::ToDevices(_) if !self.queued.is_empty() => {
+                MemberDelivery::Reached(self.queued.clone())
+            }
+            TargetedDelivery::ToDevices(_) => MemberDelivery::Failed(format!(
+                "every delivery failed: {}",
+                self.failed
+                    .iter()
+                    .map(|(device, error)| format!("{device}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+            TargetedDelivery::Undeliverable(
+                Undeliverable::NoAttributedDevice | Undeliverable::ReservedTargetOnly,
+            ) => MemberDelivery::NoPhone,
+            TargetedDelivery::Undeliverable(Undeliverable::NotAMember) => {
+                MemberDelivery::Failed("not a household member".to_string())
+            }
+            TargetedDelivery::Undeliverable(Undeliverable::AttributionUnavailable(why)) => {
+                MemberDelivery::Failed(format!("the member's devices could not be read: {why}"))
+            }
+        }
     }
 }
 
@@ -162,12 +190,12 @@ impl NotificationSender for BroadcastNotificationSender {
 
 #[async_trait]
 impl MemberNotifier for BroadcastNotificationSender {
-    async fn notify_member(&self, profile_id: &str, notification: Notification) -> Vec<String> {
+    async fn notify_member(&self, profile_id: &str, notification: Notification) -> MemberDelivery {
         let report = self.send_to_profile(profile_id, notification).await;
         for (device, error) in &report.failed {
             tracing::warn!(device = %device, error = %error, "member notification failed for one device");
         }
-        report.queued
+        report.outcome()
     }
 }
 
@@ -432,16 +460,69 @@ mod tests {
         let port: &dyn MemberNotifier = &sender;
         assert_eq!(
             port.notify_member("liz", notif("unused")).await,
-            vec!["phone-liz".to_string()]
+            MemberDelivery::Reached(vec!["phone-liz".to_string()])
         );
     }
 
+    /// A member without a phone and a pond that failed are different facts to the caller.
     #[tokio::test]
-    async fn the_member_port_reaches_nobody_without_attribution() {
+    async fn the_member_port_tells_no_phone_from_a_failure() {
+        let port = |attribution: Option<Arc<ScriptedAttribution>>| {
+            let (tx, _rx) = broadcast::channel(8);
+            let sender = BroadcastNotificationSender::new(tx, Arc::new(StubQueue::default()), None);
+            match attribution {
+                Some(a) => sender.with_device_attribution(a),
+                None => sender,
+            }
+        };
+        assert_eq!(
+            port(Some(ScriptedAttribution::returning(&[])))
+                .notify_member("liz", notif("unused"))
+                .await,
+            MemberDelivery::NoPhone
+        );
+        for (why, sender) in [
+            ("unreadable", port(Some(ScriptedAttribution::failing()))),
+            ("unwired", port(None)),
+        ] {
+            assert!(
+                matches!(
+                    sender.notify_member("liz", notif("unused")).await,
+                    MemberDelivery::Failed(_)
+                ),
+                "{why} attribution must read as a failure, not as no phone"
+            );
+        }
+        assert!(matches!(
+            port(Some(ScriptedAttribution::returning(&["phone"])))
+                .notify_member("  ", notif("unused"))
+                .await,
+            MemberDelivery::Failed(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn every_write_failing_is_a_failure() {
+        struct BrokenQueue;
+        #[async_trait]
+        impl NotificationQueueRepository for BrokenQueue {
+            async fn enqueue(&self, _n: Notification) -> Result<()> {
+                anyhow::bail!("disk full")
+            }
+            async fn list_undelivered(&self, _device_id: &str) -> Result<Vec<Notification>> {
+                Ok(Vec::new())
+            }
+            async fn mark_delivered(&self, _ids: &[String]) -> Result<()> {
+                Ok(())
+            }
+        }
         let (tx, _rx) = broadcast::channel(8);
-        let sender = BroadcastNotificationSender::new(tx, Arc::new(StubQueue::default()), None);
-        let port: &dyn MemberNotifier = &sender;
-        assert!(port.notify_member("liz", notif("unused")).await.is_empty());
+        let sender = BroadcastNotificationSender::new(tx, Arc::new(BrokenQueue), None)
+            .with_device_attribution(ScriptedAttribution::returning(&["phone-liz"]));
+        match sender.notify_member("liz", notif("unused")).await {
+            MemberDelivery::Failed(why) => assert!(why.contains("disk full"), "{why}"),
+            other => panic!("a member whose every copy failed was told {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -382,7 +382,10 @@ fn relayed(state: &AppState, outcome: uber::Relayed) -> Response {
                 .into_response(),
         ),
         uber::Relayed::BadRequest(why) => plain(StatusCode::BAD_REQUEST, why),
-        uber::Relayed::Unavailable => plain(StatusCode::BAD_GATEWAY, "Uber could not be reached."),
+        uber::Relayed::Unavailable => plain(
+            StatusCode::BAD_GATEWAY,
+            "Uber is not answering right now. Try again later.",
+        ),
     }
 }
 

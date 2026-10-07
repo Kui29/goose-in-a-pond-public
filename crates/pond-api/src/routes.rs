@@ -304,6 +304,11 @@ pub fn api_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/oauth/refresh", post(oauth_refresh_handler))
         .route("/oauth/providers", get(oauth_providers_handler))
         .route("/oauth/status/{state}", get(oauth_status_handler))
+        .route("/rides/quote", post(crate::rides::quote))
+        .route("/rides/{id}", get(crate::rides::get))
+        .route("/rides/{id}/confirm", post(crate::rides::confirm))
+        .route("/rides/{id}/decline", post(crate::rides::decline))
+        .route("/rides/{id}/cancel", post(crate::rides::cancel))
         .route("/uber/accounts", get(crate::uber_accounts::list))
         .route(
             "/uber/accounts/connect",
@@ -7190,6 +7195,23 @@ async fn delete_profile(
         })
         .unwrap_or_default();
 
+    // Held until the member is gone, so a sign-in finishing now cannot keep tokens for nobody.
+    let _members = crate::uber_accounts::members_gate().await;
+    // The member's Uber sign-in is in the secret store, where nothing cascades. Forgetting it first
+    // means a failure aborts with nothing deleted, never a deleted member whose tokens live on.
+    let uber_accounts = crate::uber_accounts::forget_member(&state, &id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!(
+                        "could not forget the member's Uber sign-in, so the member was not deleted: {e}"
+                    )
+                })),
+            )
+        })?;
+
     // `primary_profile_id` is a KV row, not a foreign key, so clear it by hand before the delete.
     // Both failures abort: proceeding would leave it dangling.
     let settings = state.settings_repo.get().await.map_err(|e| {
@@ -7234,6 +7256,7 @@ async fn delete_profile(
         "deleted": {
             "memories":        memories,
             "face_embeddings": faces,
+            "uber_accounts":   uber_accounts,
         },
         "released": {
             "sessions": sessions,
@@ -10735,6 +10758,13 @@ async fn install_marketplace_handler(
         })
         .unwrap_or_default();
 
+    if let Some(refused) = secrets
+        .keys()
+        .find_map(|key| crate::uber_accounts::refuse_reserved_secret(key))
+    {
+        return refused;
+    }
+
     if !ext.required_secrets.is_empty() {
         let mut missing = Vec::new();
         for sr in &ext.required_secrets {
@@ -10865,7 +10895,7 @@ async fn install_marketplace_handler(
 
 // ── Secret management handlers ────────────────────────────────────────────────
 
-/// `GET /api/v1/secrets` — list stored secret key names (never values).
+/// `GET /api/v1/secrets` — list stored secret key names (never values), less members' Uber keys.
 async fn list_secrets_handler(State(state): State<Arc<AppState>>) -> axum::response::Response {
     use axum::response::IntoResponse;
     let Some(repo) = &state.secret_repo else {
@@ -10876,7 +10906,10 @@ async fn list_secrets_handler(State(state): State<Arc<AppState>>) -> axum::respo
             .into_response();
     };
     match repo.list_keys().await {
-        Ok(keys) => Json(json!({"keys": keys})).into_response(),
+        Ok(keys) => Json(json!({
+            "keys": crate::uber_accounts::without_reserved_secrets(keys)
+        }))
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -10891,6 +10924,9 @@ async fn check_secret_handler(
     Path(key): Path<String>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if let Some(refused) = crate::uber_accounts::refuse_reserved_secret(&key) {
+        return refused;
+    }
     let Some(repo) = &state.secret_repo else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10915,6 +10951,9 @@ async fn set_secret_handler(
     Json(body): Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if let Some(refused) = crate::uber_accounts::refuse_reserved_secret(&key) {
+        return refused;
+    }
     let Some(repo) = &state.secret_repo else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10945,6 +10984,9 @@ async fn delete_secret_handler(
     Path(key): Path<String>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if let Some(refused) = crate::uber_accounts::refuse_reserved_secret(&key) {
+        return refused;
+    }
     let Some(repo) = &state.secret_repo else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -11152,6 +11194,13 @@ async fn set_extension_secrets_handler(
         }
     };
 
+    if let Some(refused) = secrets
+        .keys()
+        .find_map(|key| crate::uber_accounts::refuse_reserved_secret(key))
+    {
+        return refused;
+    }
+
     if let Some(reason) = ext.as_ref().and_then(|e| refused_choice(e, &secrets)) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": reason}))).into_response();
     }
@@ -11293,19 +11342,18 @@ async fn oauth_authorize_handler(
     let (code_verifier, code_challenge) = oauth_callback::generate_pkce();
     let state_nonce = oauth_callback::generate_state();
 
-    {
-        let mut sessions = state.oauth_state.write().await;
-        sessions.insert(
-            state_nonce.clone(),
-            oauth_callback::PkceSession {
-                provider_id: provider.id.clone(),
-                code_verifier,
-                extension_id,
-                profile_id: None,
-                created_at: std::time::Instant::now(),
-            },
-        );
-    }
+    oauth_callback::begin_session(
+        &state.oauth_state,
+        state_nonce.clone(),
+        oauth_callback::PkceSession {
+            provider_id: provider.id.clone(),
+            code_verifier,
+            extension_id,
+            profile_id: None,
+            created_at: std::time::Instant::now(),
+        },
+    )
+    .await;
 
     let redirect_uri = format!("http://127.0.0.1:{}/api/v1/oauth/callback", state.api_port);
     let scopes = provider.scopes.join(" ");
@@ -11356,10 +11404,7 @@ async fn oauth_callback_handler(
     let code = params.get("code").cloned().unwrap_or_default();
     let state_nonce = params.get("state").cloned().unwrap_or_default();
 
-    let session = {
-        let mut sessions = state.oauth_state.write().await;
-        sessions.remove(&state_nonce)
-    };
+    let session = crate::oauth_callback::take_session(&state.oauth_state, &state_nonce).await;
 
     // Every terminal branch records its outcome for the UI's status poll.
     let fail = |reason: &str| {
@@ -11391,7 +11436,7 @@ async fn oauth_callback_handler(
 
     // Per-member, and its client secret lives with Jarida's credentials service.
     if session.provider_id == crate::uber_accounts::PROVIDER_ID {
-        return crate::uber_accounts::finish_sign_in(&state, session, &code, &state_nonce).await;
+        return crate::uber_accounts::finish_sign_in(&state, session, &params, &state_nonce).await;
     }
 
     let providers = pond_core::user_data::services::oauth_providers::builtin_oauth_providers();
@@ -11539,8 +11584,22 @@ async fn oauth_status_handler(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    if state.oauth_state.read().await.contains_key(&state_nonce) {
-        return Json(json!({"status": "pending"})).into_response();
+    if let Some(expired) = state
+        .oauth_state
+        .read()
+        .await
+        .get(&state_nonce)
+        .map(|session| session.is_expired())
+    {
+        return if expired {
+            Json(json!({
+                "status": "failed",
+                "error": crate::oauth_callback::SESSION_EXPIRED,
+            }))
+            .into_response()
+        } else {
+            Json(json!({"status": "pending"})).into_response()
+        };
     }
 
     match crate::oauth_callback::peek_outcome(&state.oauth_outcomes, &state_nonce).await {

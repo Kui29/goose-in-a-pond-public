@@ -679,8 +679,9 @@ pub struct Settings {
     #[serde(default = "Settings::default_ext_orchestrator_enabled")]
     pub ext_orchestrator_enabled: bool,
 
-    /// Offers directions and ride-app links. Off by default: two more schemas in every prompt,
-    /// and a destination lookup sends the place name to the geocoder.
+    /// Offers directions, ride-app links and ride offers, and lets members book rides. Off by
+    /// default: three more tool schemas in every prompt, place names go to the geocoder, and a
+    /// booking spends a member's money.
     #[serde(default = "Settings::default_ext_travel_enabled")]
     pub ext_travel_enabled: bool,
 
@@ -2168,7 +2169,8 @@ mod tests {
     /// Only these `ext_*` toggles may ship off, each for the reason given here:
     /// - `ext_orchestrator_enabled`: consent to autonomous `GooseMode::Auto` agents.
     /// - `ext_context_enabled`: consent, and two tool schemas in every turn's prompt.
-    /// - `ext_travel_enabled`: two tool schemas per prompt, and destinations leave the pond.
+    /// - `ext_travel_enabled`: three tool schemas per prompt, place names leave the pond, and it
+    ///   lets members book rides.
     #[test]
     fn only_the_deliberate_extension_toggles_ship_switched_off() {
         let value = serde_json::to_value(Settings::default()).expect("serialize Settings");

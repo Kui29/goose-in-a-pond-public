@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 /// Uber's documented token endpoint.
 pub const DEFAULT_TOKEN_URL: &str = "https://auth.uber.com/oauth/v2/token";
 
+/// Shorter than a pond waits for this service (25 s), so an exchange finished here always reaches a
+/// pond that is still waiting: Uber's code is single use.
 const UBER_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The only return address a pond's sign-in uses: its own loopback OAuth callback. Refusing
@@ -67,11 +69,13 @@ pub struct UberRelay {
 pub enum Relayed {
     /// Uber's tokens, reduced to the fields a pond uses.
     Tokens(Value),
-    /// Uber refused: its own error code (`invalid_grant`), never its whole reply.
+    /// Uber refused the code or refresh token: its own OAuth error code (`invalid_grant`), never
+    /// its whole reply.
     Refused(String),
     /// The pond sent something this relay will not forward.
     BadRequest(&'static str),
-    /// Uber could not be reached or answered with something that isn't tokens.
+    /// Nothing was learned about the grant: Uber could not be reached, was busy or failing (429,
+    /// 5xx), or answered with something that is neither tokens nor an OAuth refusal.
     Unavailable,
 }
 
@@ -155,13 +159,22 @@ impl UberRelay {
         if status.is_success() {
             return tokens(&body).map_or(Relayed::Unavailable, Relayed::Tokens);
         }
-        let code = body
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("refused")
-            .to_string();
-        tracing::info!(status = status.as_u16(), %code, "Uber refused a token request");
-        Relayed::Refused(code)
+        // Only a 4xx carrying an OAuth `error` judges the grant. A 429, a 5xx or an error page says
+        // nothing about it, and passing one on as a refusal would read as a revoked sign-in.
+        let judged = status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS;
+        match body.get("error").and_then(Value::as_str) {
+            Some(code) if judged => {
+                tracing::info!(status = status.as_u16(), %code, "Uber refused a token request");
+                Relayed::Refused(code.to_string())
+            }
+            _ => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "Uber gave no usable answer to a token request"
+                );
+                Relayed::Unavailable
+            }
+        }
     }
 }
 

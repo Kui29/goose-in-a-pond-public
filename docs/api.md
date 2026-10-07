@@ -119,6 +119,11 @@ All errors return JSON:
 | POST | /recipes | Protected | Create a recipe |
 | PUT | /recipes/{id} | Protected | Update a recipe |
 | DELETE | /recipes/{id} | Protected | Delete a recipe |
+| POST | /rides/quote | Protected, member's phone | An upfront fare from the phone's location; books nothing |
+| GET | /rides/{id} | Protected, member's phone | A quoted or booked ride |
+| POST | /rides/{id}/confirm | Protected, member's phone | Book the ride at the quoted fare |
+| POST | /rides/{id}/decline | Protected, member's phone | Turn the fare down |
+| POST | /rides/{id}/cancel | Protected, member's phone | Cancel a booked ride |
 | GET | /uber/accounts | Protected, host only | Members who have connected Uber |
 | POST | /uber/accounts/connect | Protected, host only | Start a member's Uber sign-in |
 | DELETE | /uber/accounts/{profile_id} | Protected, host only | Forget a member's Uber sign-in on this pond |
@@ -989,14 +994,16 @@ Removes a household member and reports what went with them.
 {
   "profile_id": "8133c258-3392-4f0e-ba36-3d28a51f23a4",
   "display_name": "Liz",
-  "deleted":  { "memories": 42, "face_embeddings": 3 },
+  "deleted":  { "memories": 42, "face_embeddings": 3, "uber_accounts": 1 },
   "released": { "sessions": 7 },
   "cleared_primary_profile": false
 }
 ```
 
 `deleted` and `released` are separate on purpose. Memories and face embeddings
-are removed (`ON DELETE CASCADE`). Sessions are **released** — the conversation
+are removed (`ON DELETE CASCADE`), and so is the member's Uber sign-in
+(`uber_accounts`: 1 when they had one), forgotten before the member is deleted so
+that a failure deletes nothing. Sessions are **released** — the conversation
 survives, stripped of its attribution, because a conversation is not solely the
 speaker's. Household-scoped memories (`profile_id IS NULL`) are shared context
 and are never counted or removed.
@@ -1799,6 +1806,70 @@ Partial update.
 
 ---
 
+## Rides
+
+A member books a ride from **their own paired phone**. The member is the one the phone's pairing
+token belongs to (`DeviceAttribution`), never a field in the request. A ride belonging to another
+member answers **404**, as if it did not exist. The pond's desktop, and a phone whose pairing names
+no member, get **403**. Booking needs travel switched on (`ext_travel_enabled`) and Uber sign-in
+support (see *Uber accounts*) when the pond starts; without them every route answers **503**. While
+travel is switched off, quote and confirm answer **503**; reading, declining and cancelling still
+work.
+
+The order is always: quote, then the member confirms. `book_ride` (the assistant's tool) only sends
+the phone a `ride_offer` notification whose `data` names the drop-off; the phone then asks for the
+fare from where it is.
+
+### POST /rides/quote
+
+**Request**
+```json
+{
+  "pickup": { "latitude": -1.2676, "longitude": 36.8108, "name": "Home" },
+  "dropoff": { "latitude": -1.319167, "longitude": 36.9275, "name": "JKIA" }
+}
+```
+
+**Response 200**
+```json
+{
+  "id": "…", "provider": "uber",
+  "pickup": { "name": "Home", "latitude": -1.2676, "longitude": 36.8108 },
+  "dropoff": { "name": "JKIA", "latitude": -1.319167, "longitude": 36.9275 },
+  "fare": { "display": "KES 1,250", "currency_code": "KES", "expires_at": "2026-10-06T08:02:00Z" },
+  "pickup_eta_mins": 4,
+  "state": { "state": "awaiting_confirmation" }
+}
+```
+
+`state.state` is one of `awaiting_confirmation`, `requesting`, `requested` (with `ride`: status,
+driver, vehicle, `pickup_eta_mins`), `outcome_unknown` (with `reason`: Uber's answer was lost and it
+may have booked the ride), `declined`, `failed` (with `reason`: Uber refused). A trip the pond took
+over at startup, rather than quoted, has `pickup`, `dropoff`, `fare` and `pickup_eta_mins` null.
+
+**422** — the drop-off is more than 150 km from the pickup; no fare is asked for.
+
+### POST /rides/{id}/confirm
+
+Books the ride and returns it as above, with `state.state` = `requested`.
+
+| Status | Meaning |
+|---|---|
+| 202 | Uber's answer was lost and no trip of the member's shows the ride yet: `state.state` = `outcome_unknown`, and `message` says to check the Uber app. The pond keeps checking and never sends the request again |
+| 404 | No such ride for this member |
+| 409 | Already confirmed, declined or tried; a fare is confirmed at most once |
+| 410 | The fare expired; quote again |
+| 502 | Uber refused (its reason is in `error`). The ride is not retried |
+
+### POST /rides/{id}/decline · POST /rides/{id}/cancel
+
+**204.** Cancel works only on a booked ride (409 otherwise; for an `outcome_unknown` ride the pond
+first looks for it among the member's trips under way); Uber may charge a cancellation fee.
+
+While a ride is under way the pond reads it every `GIAP_RIDE_POLL_SECS` (default 15, at least 5)
+and sends the member a `ride_update` notification (`data`: `ride_id`, `status`) on each change. If
+40 reads in a row fail it stops, with a last `ride_update` whose `data` has `followed: false`.
+
 ## Uber accounts
 
 Each household member connects their own Uber account, so rides go on their own Uber payment
@@ -1808,6 +1879,11 @@ Uber app's client secret; the member's tokens are kept in this pond's secret sto
 
 **Host only:** every route needs the request to come from this machine **and** carry the host
 credential (`X-Pond-Host-Credential`). A paired phone gets 403.
+
+The tokens are kept under secret-store keys starting with `UBER_`, and these routes are the only
+way to them: the generic secrets API (`/secrets`, `/extensions/{name}/secrets`, a marketplace
+install's `secrets`) answers 403 with `"code": "secret_reserved"` for such a key, and
+`GET /secrets` leaves them out.
 
 ### POST /uber/accounts/connect
 
@@ -1822,13 +1898,19 @@ credential (`X-Pond-Host-Credential`). A paired phone gets 403.
 ```
 
 Open `auth_url` in a browser. Uber returns to `/oauth/callback`, which finishes the sign-in; follow
-it with `GET /oauth/status/{state}`.
+it with `GET /oauth/status/{state}`. A sign-in not finished within ten minutes expires (Uber's code
+lives that long): the status turns `failed` and a late return is refused. When Uber itself ends the
+sign-in, its `error` and `error_description` are the failure's reason.
 
-| Status | Meaning |
-|---|---|
-| 404 | No such household member |
-| 502 | The credentials service could not start an Uber sign-in |
-| 503 | No secret store, or the credentials service is turned off (`POND_CREDENTIALS_URL=off`) |
+| Status | `code` | Meaning |
+|---|---|---|
+| 404 | `not_a_member` | No such household member |
+| 502 | `uber_relay_failed` | The credentials service could not start an Uber sign-in |
+| 503 | `no_secret_store` | This pond has no secret store to keep sign-ins in |
+| 503 | `uber_sign_in_off` | The credentials service is turned off (`POND_CREDENTIALS_URL=off`) |
+
+The tokens are kept only if the member is still in the household when Uber's code has been
+exchanged; a member removed meanwhile gets nothing kept, and the sign-in is reported failed.
 
 ### GET /uber/accounts
 
@@ -1837,9 +1919,15 @@ it with `GET /oauth/status/{state}`.
 { "connected": ["p-1"] }
 ```
 
+Only members still in the household are listed. Works with the credentials service turned off.
+
 ### DELETE /uber/accounts/{profile_id}
 
-**Response 204.** Forgets the member's tokens on this pond. Their Uber account is untouched.
+**Response 204.** Forgets the member's tokens on this pond. Their Uber account is untouched. Works
+with the credentials service turned off.
+
+Every refusal on these routes is `{ "error": "...", "code": "..." }`; a 403 off this machine has
+`code` `host_only`.
 
 ## Error Codes Summary
 

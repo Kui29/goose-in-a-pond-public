@@ -21,6 +21,10 @@ pub trait DraftAuthority: Send + Sync {
         engine_session_id: &str,
     ) -> Option<(ProfileScope, IdentificationSource)>;
 
+    /// The household's member when it has exactly one, so a `Household` speaker can only be
+    /// them; `None` for any other count or an unreadable list.
+    async fn sole_member(&self) -> Option<String>;
+
     /// Record a decision; must never fail the caller. Takes the whole decision: under `audit`, a
     /// refusal's effect is "permitted". `action` is a bare verb (`draft_approve`), no verdict.
     async fn audit(&self, engine_session_id: &str, action: &str, decision: &PolicyDecision);

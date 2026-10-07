@@ -13,6 +13,7 @@ pub mod network;
 pub mod oauth_callback;
 pub mod player;
 pub mod quiet_pass;
+pub mod rides;
 pub mod routes;
 pub mod runs;
 pub mod spotify_focus;

@@ -3075,3 +3075,32 @@ windows; not a PAI milestone completion).**
   tests 161 and its four integration binaries; the four checks; `scripts/live-test.sh` on port
   4979, 172 checks, 0 failed. This Mac (24 GB) reads total 24,576, budget 18,432, available about
   16,300 MB.
+
+**2026-10-07 — Uber accounts, the review's fixes (PAI-2 secrets and egress; not a PAI milestone
+completion).**
+
+- **What landed** (corrections to #461, #462 and #463, on the Uber sign-in relay and the pond's
+  Uber accounts).
+  Members' Uber tokens live in the secret store under `UBER_*:<profile_id>`, and the generic secrets
+  API answered any bearer, a paired phone's included. It now refuses every `UBER_` key with 403
+  `secret_reserved` (`/secrets`, `/extensions/{name}/secrets`, a marketplace install's `secrets`)
+  and leaves them out of `GET /secrets`. Deleting a member forgets their tokens first and aborts if
+  that fails; a sign-in checks its member again after Uber's code is exchanged, under a gate
+  `delete_profile` holds too; a renewal never writes back tokens forgotten meanwhile (it checks and
+  writes under a process-wide lock `disconnect` takes as well); listing and
+  forgetting no longer need the relay; an unfinished sign-in expires after ten minutes; Uber's own
+  `error` reaches the failure reason; the `request_receipt` scope is gone.
+- **PAI-2 (egress).** No new sender: the relay calls stay in `pond-adapters-uber/src/accounts.rs`
+  behind `egress::begin_as(.., "giap-credentials")`. What they carry, a member's authorization code
+  or refresh token, is now said in the PAI-2 note, which had said the service is sent no identifier
+  and no body. The pond waits 25 s for the relay, longer than the relay's 15 s for Uber, and the
+  relay passes on only a 4xx OAuth refusal as a refusal, so Uber being down never reads as a revoked
+  sign-in.
+- **Other invariants.** Preamble, guest, turn blocking: none. No `Settings` field, no migration.
+- **Not done.** A sign-in against a real Uber app (the relay has none configured yet), the Orin,
+  `scripts/live-test.sh`.
+- **Verification** (Mac). `cargo test --locked -p pond-api -p pond-adapters-uber` (727 passed, 0
+  failed, 2 ignored); pond-core's `egress_guard` and `ride_booking_is_wired`; `cargo test --locked`
+  and `cargo clippy --locked --all-targets` in `services/pondcredentials` (32 service tests); `cargo
+  clippy --locked -p pond-api -p pond-adapters-uber --all-targets` with nothing in the changed code;
+  `cargo check --locked -p pond-server --all-targets`; `cargo fmt --check` in both workspaces.

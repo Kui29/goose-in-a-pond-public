@@ -237,48 +237,90 @@ pub struct EgressCall {
     url: String,
     method: &'static str,
     started: std::time::Instant,
-    /// Named when the call is not a chat tool's, so it is not filed under whatever tool is in flight.
-    tool: Option<String>,
+    attribution: Attribution,
+}
+
+/// Whose call it is, for the record.
+enum Attribution {
+    /// The chat tool and session in flight.
+    InFlight,
+    /// This tool, in the session in flight: not filed under whatever tool is in flight.
+    Tool(String),
+    /// This tool and session, whatever turn is in flight.
+    Named { tool: String, session_id: String },
 }
 
 /// Open a gated outbound call to `url`. See [`EgressCall`].
 pub fn begin(url: &str, method: &'static str) -> Result<EgressCall, EgressDenied> {
     check_egress(url)?;
-    Ok(EgressCall {
-        url: url.to_string(),
-        method,
-        started: std::time::Instant::now(),
-        tool: None,
-    })
+    Ok(EgressCall::new(url, method, Attribution::InFlight))
 }
 
 /// As [`begin`], attributed to `tool` and not to the process-global one: for a call the host makes
 /// on its own account, such as fetching a credential, rather than on a chat tool's behalf.
 pub fn begin_as(url: &str, method: &'static str, tool: &str) -> Result<EgressCall, EgressDenied> {
     check_egress_for(url, tool, &current_session_id())?;
-    Ok(EgressCall {
-        url: url.to_string(),
+    Ok(EgressCall::new(
+        url,
         method,
-        started: std::time::Instant::now(),
-        tool: Some(tool.to_string()),
-    })
+        Attribution::Tool(tool.to_string()),
+    ))
+}
+
+/// As [`begin_as`], with the session named too (empty for none): for a call no chat turn made,
+/// such as a phone route's or a background task's, which the turn in flight must not be given.
+pub fn begin_for(
+    url: &str,
+    method: &'static str,
+    tool: &str,
+    session_id: &str,
+) -> Result<EgressCall, EgressDenied> {
+    check_egress_for(url, tool, session_id)?;
+    Ok(EgressCall::new(
+        url,
+        method,
+        Attribution::Named {
+            tool: tool.to_string(),
+            session_id: session_id.to_string(),
+        },
+    ))
 }
 
 impl EgressCall {
+    fn new(url: &str, method: &'static str, attribution: Attribution) -> Self {
+        Self {
+            url: url.to_string(),
+            method,
+            started: std::time::Instant::now(),
+            attribution,
+        }
+    }
+
+    /// The `(tool, session)` this call is recorded under, read now.
+    pub fn recorded_as(&self) -> (String, String) {
+        match &self.attribution {
+            Attribution::InFlight => (current_tool(), current_session_id()),
+            Attribution::Tool(tool) => (tool.clone(), current_session_id()),
+            Attribution::Named { tool, session_id } => (tool.clone(), session_id.clone()),
+        }
+    }
+
     /// Record the completed call. `None` means the request never got a status.
     pub fn finish(self, status: Option<u16>) {
         let latency_ms = self.started.elapsed().as_millis() as u64;
-        match &self.tool {
-            Some(tool) => record_egress_for(
-                &self.url,
-                self.method,
-                tool,
-                &current_session_id(),
-                status,
-                latency_ms,
-            ),
-            None => record_egress(&self.url, self.method, status, latency_ms),
+        if matches!(self.attribution, Attribution::InFlight) {
+            record_egress(&self.url, self.method, status, latency_ms);
+            return;
         }
+        let (tool, session_id) = self.recorded_as();
+        record_egress_for(
+            &self.url,
+            self.method,
+            &tool,
+            &session_id,
+            status,
+            latency_ms,
+        );
     }
 }
 
@@ -620,6 +662,24 @@ mod tests {
         assert!(ev.session_id.is_none());
         assert!(!ev.attributes.contains_key("tool"));
         assert!(!ev.attributes.contains_key("status"));
+    }
+
+    /// A phone route or background task calls with no turn of its own: the record must not
+    /// borrow the session or tool of whatever chat is in flight.
+    #[test]
+    fn a_call_begun_for_a_tool_and_session_is_recorded_under_them_alone() {
+        let call = begin_for(
+            "https://api.uber.com/v1.2/requests",
+            "GET",
+            "giap-rides",
+            "",
+        )
+        .expect("open mode permits it");
+        assert_eq!(
+            call.recorded_as(),
+            ("giap-rides".to_string(), String::new())
+        );
+        call.finish(Some(200));
     }
 
     #[tokio::test]

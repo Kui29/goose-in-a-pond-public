@@ -374,8 +374,9 @@ Spotify (Spotify's Developer Policy III.3, Terms IV.2.a.i).
 `pondcredentials` (`services/pondcredentials`) serves Apple Music developer tokens so a household
 needs no Apple key. A pond with no key of its own asks it, through `egress::begin_as(..,
 "giap-credentials")`: refused under Offline before anything is sent, and logged under that name. It
-calls about once a month (the token lives 30 days), sends no identifier and no body, and only when
-`POND_CREDENTIALS_URL` is set, which nothing sets by default **[superseded: see the note below, it is
+calls about once a month (the token lives 30 days), sends no identifier and no body **[Apple Music
+only: an Uber sign-in sends a member's code or refresh token, see the 2026-10-07 note below]**, and only
+when `POND_CREDENTIALS_URL` is set, which nothing sets by default **[superseded: see the note below, it is
 now on by default]**. What the host learns is that an address
 asked, at a time; the service keeps no address, and its proxy has no access log. What it cannot
 promise is what the hosting provider's network keeps. Whether Apple's terms allow one team's token to
@@ -391,7 +392,7 @@ soon as it starts, **whether or not the household uses Apple Music**, and once i
 Apple's MusicKit script from Apple's CDN. So every desktop pond contacts Jarida's host, then Apple's, at
 every start. Unchanged: the call goes through `egress::begin_as(.., "giap-credentials")` and shows in the
 egress log; `network_mode = offline` refuses it before anything is sent; a stored local key means it is
-never asked; nothing identifying is sent; the service keeps no address. **How to turn it off:**
+never asked; nothing identifying is sent **[Apple Music only, as above]**; the service keeps no address. **How to turn it off:**
 `POND_CREDENTIALS_URL=off`, or `network_mode = offline`; there is no UI switch (a household toggle was
 offered and declined for now). Not built, and worth building: asking only after someone presses Sign in
 (or has signed in before), and persisting the token across restarts. Apple's terms on sharing the token
@@ -430,6 +431,30 @@ like Apple's; only `open` lets it run. (5) *Not settled:* Spotify's developer te
 Spotify Content into an AI model and limit the licence to private personal use; see "Spotify's terms" in
 `docs/architecture/music-player.md`. That predates this change and applies to the Spotify tools that
 already shipped.
+
+**2026-10-07 -- the credentials service also relays Uber sign-ins, and those calls carry a member's
+credentials.** "Sends no identifier and no body" and "nothing identifying is sent" above stay true of
+the Apple Music token fetch only. Connecting a member's own Uber account (the host-only
+`/uber/accounts` routes) needs Jarida's Uber client secret, which only the service holds, so the pond
+sends it, through the same `egress::begin_as(.., "giap-credentials")` gate and egress log:
+(1) `GET /v1/uber/client`, no body, when a sign-in starts; (2) `POST /v1/uber/token` with Uber's
+single-use authorization code and the pond's loopback return address
+(`http://127.0.0.1:<port>/api/v1/oauth/callback`), when the member comes back from Uber's page;
+(3) `POST /v1/uber/refresh` with the member's refresh token, when a booking or a ride being followed
+needs an access token within ten minutes of lapsing. No name or profile id is sent. The service adds
+the secret, forwards to Uber, and passes back the access token, refresh token, lifetime and scope; it
+writes and logs none of them (a refusal logs Uber's error code and HTTP status, an unusable reply its
+status) and answers `Cache-Control: no-store`. So for the length of each request a Jarida host holds a
+credential that can book rides on the member's Uber account and charge them; what it cannot promise,
+as before, is what the hosting provider's network keeps. *Kept, and where:* only on the pond, in its
+secret store under `UBER_ACCESS_TOKEN:<profile_id>`, `UBER_REFRESH_TOKEN:<profile_id>` and
+`UBER_TOKEN_EXPIRES_AT:<profile_id>`. Those keys are reached only through the host-only routes: the
+generic secrets API refuses them and leaves them out of its listing, so a paired phone's bearer
+cannot read, replace or forget another member's sign-in. They are forgotten when the member
+disconnects or is deleted, a sign-in left unfinished expires after ten minutes, and a sign-in that
+finishes after its member was removed keeps nothing. `POND_CREDENTIALS_URL=off` turns the relay off
+with the rest of the service; sign-ins already kept can then still be listed and forgotten, though
+not renewed. `docs/architecture/pondcredentials.md`.
 
 **A file-level guard is necessary and not sufficient, and P6a is where that stopped being a
 footnote.** `egress_tracked_files_reach_the_tracker` checks for ONE tracker symbol per FILE, so a

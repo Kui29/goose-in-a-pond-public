@@ -121,6 +121,13 @@ async fn an_engine_session_resolves_to_the_member_who_owns_the_giap_session() {
     );
 }
 
+/// Neither member's phone may stand in for an unidentified speaker in a pond of two.
+#[tokio::test]
+async fn a_pond_of_two_has_no_sole_member() {
+    let f = two_member_pond("20260805_9").await;
+    assert_eq!(f.authority.sole_member().await, None);
+}
+
 /// Unmapped is common on upgraded ponds: `engine_session_map` (0032) lacks older sessions.
 #[tokio::test]
 async fn an_unmapped_or_blank_engine_session_refuses_rather_than_widens() {

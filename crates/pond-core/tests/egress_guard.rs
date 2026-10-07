@@ -21,6 +21,7 @@ const TRACKER_SYMBOLS: &[&str] = &[
     "check_egress(",
     "egress::begin(",
     "egress::begin_as(",
+    "egress::begin_for(",
     "traced_send(",
     "traced_get(",
 ];

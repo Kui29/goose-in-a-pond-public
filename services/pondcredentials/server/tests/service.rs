@@ -706,6 +706,87 @@ async fn ubers_refusal_is_passed_on_as_its_code_only() {
     assert!(!body.contains("secret street"), "{body}");
 }
 
+/// A stand-in for Uber's token endpoint that always gives the same answer.
+async fn uber_answering(
+    status: StatusCode,
+    content_type: &'static str,
+    body: &'static str,
+) -> String {
+    let app = axum::Router::new().route(
+        "/oauth/v2/token",
+        axum::routing::post(move || async move {
+            (
+                status,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                body,
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/oauth/v2/token", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// Uber being down, busy or behind an error page says nothing about the member's sign-in, so it is
+/// never passed on as a refusal: a pond would read that as a revoked sign-in.
+#[tokio::test]
+async fn uber_being_unavailable_is_not_passed_on_as_a_refusal() {
+    const JSON: &str = "application/json";
+    for (status, content_type, body) in [
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            JSON,
+            r#"{"error":"temporarily_unavailable"}"#,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "text/html",
+            "<html>Down for maintenance</html>",
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JSON,
+            r#"{"error":"server_error"}"#,
+        ),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            JSON,
+            r#"{"error":"too_many_requests"}"#,
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            "text/html",
+            "<html>Bad request</html>",
+        ),
+        (
+            StatusCode::OK,
+            "text/html",
+            "<html>Sign in to the network</html>",
+        ),
+    ] {
+        let svc = uber_service(&uber_answering(status, content_type, body).await);
+        for (route, request) in [
+            (
+                "/v1/uber/token",
+                serde_json::json!({"code": "good-code", "redirect_uri": CALLBACK}),
+            ),
+            (
+                "/v1/uber/refresh",
+                serde_json::json!({"refresh_token": "good-refresh"}),
+            ),
+        ] {
+            let (got, _, reply) = send_json(&svc, route, request).await;
+            assert_eq!(
+                got,
+                StatusCode::BAD_GATEWAY,
+                "{route} with Uber answering {status} {content_type}: {reply}"
+            );
+            assert!(!reply.contains("uber_error"), "{reply}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_return_address_that_is_not_a_ponds_callback_is_never_sent_to_uber() {
     let (url, seen) = fake_uber().await;

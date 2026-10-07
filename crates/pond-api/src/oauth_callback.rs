@@ -17,8 +17,23 @@ pub struct PkceSession {
     pub extension_id: Option<String>,
     /// The household member a per-member sign-in (Uber) is for; `None` for household-wide ones.
     pub profile_id: Option<String>,
-    /// When the session was created — allows stale session cleanup.
+    /// When the sign-in started; it expires [`SESSION_TTL`] later.
     pub created_at: std::time::Instant,
+}
+
+/// How long a started sign-in waits for the provider to send the person back. Uber's codes live
+/// ten minutes, and RFC 6749 recommends no longer for anyone's.
+pub const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// What the UI is told about a sign-in that outlived [`SESSION_TTL`].
+pub const SESSION_EXPIRED: &str =
+    "This sign-in was not finished within ten minutes, so it expired. Start it again.";
+
+impl PkceSession {
+    /// Past [`SESSION_TTL`]: no longer pending, and its return is refused.
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() >= SESSION_TTL
+    }
 }
 
 /// In-flight PKCE sessions, keyed by the random `state` nonce.
@@ -26,6 +41,20 @@ pub type OAuthState = Arc<RwLock<HashMap<String, PkceSession>>>;
 
 pub fn new_oauth_state() -> OAuthState {
     Arc::new(RwLock::new(HashMap::new()))
+}
+
+/// Track a sign-in under `state_nonce`, dropping any that have expired on the way.
+pub async fn begin_session(sessions: &OAuthState, state_nonce: String, session: PkceSession) {
+    let mut map = sessions.write().await;
+    map.retain(|_, s| !s.is_expired());
+    map.insert(state_nonce, session);
+}
+
+/// Remove the sign-in `state_nonce` names, which ends it either way; `None` when there is none or
+/// it has expired.
+pub async fn take_session(sessions: &OAuthState, state_nonce: &str) -> Option<PkceSession> {
+    let session = sessions.write().await.remove(state_nonce)?;
+    (!session.is_expired()).then_some(session)
 }
 
 /// How a finished OAuth flow ended.
@@ -166,6 +195,39 @@ mod tests {
         rt.block_on(async {
             let state = new_oauth_state();
             assert!(state.read().await.is_empty());
+        });
+    }
+
+    fn session(age: std::time::Duration) -> PkceSession {
+        PkceSession {
+            provider_id: "uber".to_string(),
+            code_verifier: String::new(),
+            extension_id: None,
+            profile_id: Some("liz".to_string()),
+            created_at: std::time::Instant::now() - age,
+        }
+    }
+
+    #[test]
+    fn an_expired_sign_in_is_refused_and_swept() {
+        rt().block_on(async {
+            let sessions = new_oauth_state();
+            let stale = SESSION_TTL + std::time::Duration::from_secs(1);
+            begin_session(&sessions, "old".into(), session(stale)).await;
+            begin_session(&sessions, "older".into(), session(stale)).await;
+            assert_eq!(
+                sessions.read().await.len(),
+                1,
+                "the first stale one was swept"
+            );
+
+            assert!(take_session(&sessions, "older").await.is_none());
+            assert!(sessions.read().await.is_empty(), "taken even when refused");
+
+            begin_session(&sessions, "new".into(), session(std::time::Duration::ZERO)).await;
+            let fresh = take_session(&sessions, "new").await.unwrap();
+            assert_eq!(fresh.profile_id.as_deref(), Some("liz"));
+            assert!(take_session(&sessions, "new").await.is_none(), "single use");
         });
     }
 

@@ -135,6 +135,12 @@ fn build_settings(store: &HashMap<String, String>) -> Settings {
     if let Some(v) = store.get("network_mode") {
         s.network_mode = v.clone();
     }
+    // Ride booking's gate: must round-trip, or a "booking is off" test passes for the wrong reason.
+    if let Some(v) = store.get("ext_travel_enabled") {
+        if let Ok(b) = v.parse() {
+            s.ext_travel_enabled = b;
+        }
+    }
     s
 }
 
@@ -214,6 +220,10 @@ impl SettingsRepository for MockSettingsRepository {
         );
         store.insert("prompt_addendum".into(), settings.prompt_addendum.clone());
         store.insert("network_mode".into(), settings.network_mode.clone());
+        store.insert(
+            "ext_travel_enabled".into(),
+            settings.ext_travel_enabled.to_string(),
+        );
         Ok(())
     }
 

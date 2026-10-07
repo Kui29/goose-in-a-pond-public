@@ -109,6 +109,18 @@ impl Ride {
     }
 }
 
+/// Why a ride request returned no ride.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum RequestFailure {
+    /// The provider refused it, or it was never sent: the provider holds no ride from it.
+    #[error("{0}")]
+    Refused(String),
+    /// No clear answer (a timeout, a dropped connection, a server error): the provider may hold
+    /// the ride.
+    #[error("{0}")]
+    Uncertain(String),
+}
+
 /// Where a quoted ride stands in the pond. Only `AwaitingConfirmation` can be confirmed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -119,24 +131,46 @@ pub enum BookingState {
     Requested {
         ride: Ride,
     },
+    /// Sent, and the provider's answer was lost, so it may hold the ride. The member's current
+    /// trip with the provider settles it; never retried, and never reported as failed.
+    OutcomeUnknown {
+        reason: String,
+    },
     Declined,
-    /// The request failed; the provider may or may not hold a ride, so it is never retried.
+    /// The provider refused the request, so it holds no ride from it. Never retried.
     Failed {
         reason: String,
     },
 }
 
-/// A fare quoted for one member, waiting for that member to confirm it.
+/// The trip a member was quoted, at the fare they confirm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuotedTrip {
+    pub pickup: Place,
+    pub dropoff: Place,
+    pub quote: FareQuote,
+}
+
+/// One member's ride: a fare waiting for their confirmation, or a ride past it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingRide {
     /// The pond's id, which the phone confirms by; not the provider's.
     pub id: String,
     pub profile_id: String,
-    pub pickup: Place,
-    pub dropoff: Place,
-    pub quote: FareQuote,
+    /// `None` for a trip the pond found under way with the provider rather than quoted here.
+    pub trip: Option<QuotedTrip>,
     pub created_at: DateTime<Utc>,
     pub state: BookingState,
+}
+
+impl PendingRide {
+    /// How a notification about this ride is titled.
+    pub fn title(&self) -> String {
+        match &self.trip {
+            Some(trip) => format!("Your ride to {}", trip.dropoff.name),
+            None => "Your ride".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

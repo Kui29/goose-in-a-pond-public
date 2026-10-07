@@ -11705,6 +11705,7 @@ dependencies = [
  "pond-adapters-mistralrs",
  "pond-adapters-ollama",
  "pond-adapters-silero",
+ "pond-adapters-uber",
  "pond-adapters-vision",
  "pond-adapters-vision-onnx",
  "pond-adapters-weather",

@@ -21,13 +21,39 @@ static CREDENTIAL: std::sync::LazyLock<pond_api::host_guard::HostCredential> =
 struct Pond {
     loopback: axum::Router,
     remote: axum::Router,
+    /// A paired phone on the companion listener: a valid bearer, no host credential.
+    phone: axum::Router,
     secrets: Arc<pond_infra::file_secret_repository::FileSecretRepository>,
     member: String,
     api_port: u16,
+    state: Arc<pond_api::AppState>,
     _dir: tempfile::TempDir,
 }
 
+/// `POND_CREDENTIALS_URL` is process-global, so a test that sets it takes a turn for its whole run.
+static CREDENTIALS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Points the pond at a credentials service, and back at none when dropped.
+struct CredentialsAt;
+
+impl CredentialsAt {
+    fn set(url: &str) -> CredentialsAt {
+        std::env::set_var("POND_CREDENTIALS_URL", url);
+        CredentialsAt
+    }
+}
+
+impl Drop for CredentialsAt {
+    fn drop(&mut self) {
+        // `off`, never unset: unset means Jarida's real service, which no test may call.
+        std::env::set_var("POND_CREDENTIALS_URL", "off");
+    }
+}
+
 async fn pond() -> Pond {
+    if std::env::var_os("POND_CREDENTIALS_URL").is_none() {
+        std::env::set_var("POND_CREDENTIALS_URL", "off");
+    }
     let pond_api::test_support::TestState { state, dir, .. } =
         pond_api::test_support::app_state().await;
     let secrets = Arc::new(
@@ -60,9 +86,13 @@ async fn pond() -> Pond {
     Pond {
         loopback: router([127, 0, 0, 1]),
         remote: router([192, 168, 1, 44]),
+        phone: pond_api::build_companion_router(state.clone()).layer(MockConnectInfo(
+            SocketAddr::from(([192, 168, 1, 45], 40_000)),
+        )),
         secrets,
         member,
         api_port,
+        state,
         _dir: dir,
     }
 }
@@ -155,11 +185,89 @@ async fn a_sign_in_is_only_for_a_real_member() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// The whole round trip. One test, because the credentials service address is process-wide.
+/// The generic secrets API never reaches a member's Uber sign-in, whatever bearer it is given,
+/// while ordinary keys go on working.
+#[tokio::test]
+async fn the_secrets_api_cannot_reach_a_members_uber_sign_in() {
+    let p = pond().await;
+    let key = format!("UBER_REFRESH_TOKEN:{}", p.member);
+    let lowercase = key.to_lowercase();
+    p.secrets.set(&key, "refresh-1").await.unwrap();
+
+    for router in [&p.phone, &p.loopback] {
+        for k in [&key, &lowercase] {
+            for (method, uri, body) in [
+                (Method::GET, format!("/api/v1/secrets/{k}/exists"), None),
+                (
+                    Method::PUT,
+                    format!("/api/v1/secrets/{k}"),
+                    Some(json!({"value": "stolen"})),
+                ),
+                (Method::DELETE, format!("/api/v1/secrets/{k}"), None),
+                (
+                    Method::POST,
+                    "/api/v1/extensions/music/secrets".to_string(),
+                    Some(json!({ k.as_str(): "stolen" })),
+                ),
+            ] {
+                let (status, reply) = call(router, method.clone(), &uri, body, false).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {reply}");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&reply).unwrap()["code"],
+                    "secret_reserved",
+                    "{method} {uri}"
+                );
+            }
+        }
+        let (status, list) = call(router, Method::GET, "/api/v1/secrets", None, false).await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        assert!(!list.to_uppercase().contains("UBER_"), "{list}");
+    }
+    assert_eq!(
+        p.secrets.get(&key).await.unwrap().as_deref(),
+        Some("refresh-1")
+    );
+    assert_eq!(p.secrets.get(&lowercase).await.unwrap(), None);
+
+    // An ordinary key, from the phone: stored, seen, listed and deleted.
+    let ordinary = "/api/v1/secrets/GIAP_TEST_ORDINARY_SECRET";
+    let (status, reply) = call(
+        &p.phone,
+        Method::PUT,
+        ordinary,
+        Some(json!({"value": "ordinary-value"})),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (_, exists) = call(
+        &p.phone,
+        Method::GET,
+        &format!("{ordinary}/exists"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&exists).unwrap()["exists"],
+        true
+    );
+    let (_, list) = call(&p.phone, Method::GET, "/api/v1/secrets", None, false).await;
+    assert!(list.contains("GIAP_TEST_ORDINARY_SECRET"), "{list}");
+    let (status, _) = call(&p.phone, Method::DELETE, ordinary, None, false).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        p.secrets.get("GIAP_TEST_ORDINARY_SECRET").await.unwrap(),
+        None
+    );
+}
+
+/// The whole round trip.
 #[tokio::test]
 async fn a_member_connects_uber_and_the_tokens_are_kept_for_them_alone() {
+    let _turn = CREDENTIALS_TURN.lock().await;
     let service = credentials_service().await;
-    std::env::set_var("POND_CREDENTIALS_URL", service.uri());
+    let _at = CredentialsAt::set(&service.uri());
     let p = pond().await;
 
     // 1. The desktop starts the sign-in and gets Uber's page.
@@ -262,13 +370,266 @@ async fn a_member_connects_uber_and_the_tokens_are_kept_for_them_alone() {
     let (_, page) = call(
         &p.loopback,
         Method::GET,
-        &format!("/api/v1/oauth/callback?error=access_denied&state={nonce}"),
+        &format!(
+            "/api/v1/oauth/callback?error=access_denied\
+             &error_description=The+user+denied+the+request&state={nonce}"
+        ),
         None,
         false,
     )
     .await;
     assert!(page.contains("Uber is not connected"), "{page}");
+    assert!(
+        page.contains("access_denied") && page.contains("The user denied the request"),
+        "{page}"
+    );
+    let (_, outcome) = call(
+        &p.loopback,
+        Method::GET,
+        &format!("/api/v1/oauth/status/{nonce}"),
+        None,
+        false,
+    )
+    .await;
+    let outcome = parse(&outcome);
+    assert_eq!(outcome["status"], "failed");
+    assert!(
+        outcome["error"].as_str().unwrap().contains("access_denied"),
+        "{outcome}"
+    );
     assert_eq!(p.secrets.get(&key).await.unwrap(), None);
+}
 
-    std::env::remove_var("POND_CREDENTIALS_URL");
+fn parse(body: &str) -> Value {
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
+}
+
+async fn uber_keys(p: &Pond) -> Vec<String> {
+    let mut keys: Vec<String> = p
+        .secrets
+        .list_keys()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.starts_with("UBER_"))
+        .collect();
+    keys.sort();
+    keys
+}
+
+async fn start_sign_in(p: &Pond) -> String {
+    let (status, body) = call(
+        &p.loopback,
+        Method::POST,
+        "/api/v1/uber/accounts/connect",
+        Some(json!({"profile_id": p.member})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    parse(&body)["state"].as_str().unwrap().to_string()
+}
+
+async fn delete_member(p: &Pond) -> Value {
+    let (status, body) = call(
+        &p.loopback,
+        Method::DELETE,
+        &format!("/api/v1/profiles/{}", p.member),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    parse(&body)
+}
+
+#[tokio::test]
+async fn deleting_a_member_forgets_their_uber_sign_in() {
+    let _turn = CREDENTIALS_TURN.lock().await;
+    let service = credentials_service().await;
+    let _at = CredentialsAt::set(&service.uri());
+    let p = pond().await;
+
+    let nonce = start_sign_in(&p).await;
+    let (_, page) = call(
+        &p.loopback,
+        Method::GET,
+        &format!("/api/v1/oauth/callback?code=good-code&state={nonce}"),
+        None,
+        false,
+    )
+    .await;
+    assert!(page.contains("Uber is connected"), "{page}");
+    assert_eq!(uber_keys(&p).await.len(), 3);
+
+    let deleted = delete_member(&p).await;
+    assert_eq!(deleted["deleted"]["uber_accounts"], 1, "{deleted}");
+    assert_eq!(uber_keys(&p).await, Vec::<String>::new());
+}
+
+/// The member is removed while Uber's code is still being exchanged.
+#[tokio::test]
+async fn a_sign_in_that_outlives_its_member_keeps_nothing() {
+    let _turn = CREDENTIALS_TURN.lock().await;
+    let service = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/uber/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"client_id": "uber-app"})))
+        .mount(&service)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/uber/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 3600
+                }))
+                .set_delay(std::time::Duration::from_secs(1)),
+        )
+        .mount(&service)
+        .await;
+    let _at = CredentialsAt::set(&service.uri());
+    let p = pond().await;
+
+    let nonce = start_sign_in(&p).await;
+    let returning = tokio::spawn({
+        let router = p.loopback.clone();
+        let uri = format!("/api/v1/oauth/callback?code=good-code&state={nonce}");
+        async move { call(&router, Method::GET, &uri, None, false).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    delete_member(&p).await;
+
+    let (_, page) = returning.await.unwrap();
+    assert!(page.contains("no longer in the household"), "{page}");
+    assert_eq!(uber_keys(&p).await, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn with_sign_in_turned_off_a_connection_is_still_listed_and_forgotten() {
+    let _turn = CREDENTIALS_TURN.lock().await;
+    let _at = CredentialsAt::set("off");
+    let p = pond().await;
+    for prefix in [
+        "UBER_ACCESS_TOKEN:",
+        "UBER_REFRESH_TOKEN:",
+        "UBER_TOKEN_EXPIRES_AT:",
+    ] {
+        p.secrets
+            .set(&format!("{prefix}{}", p.member), "1")
+            .await
+            .unwrap();
+    }
+
+    let (status, list) = call(
+        &p.loopback,
+        Method::GET,
+        "/api/v1/uber/accounts",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(parse(&list)["connected"], json!([p.member]));
+    let (status, body) = call(
+        &p.loopback,
+        Method::DELETE,
+        &format!("/api/v1/uber/accounts/{}", p.member),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(uber_keys(&p).await, Vec::<String>::new());
+
+    let (status, body) = call(
+        &p.loopback,
+        Method::POST,
+        "/api/v1/uber/accounts/connect",
+        Some(json!({"profile_id": p.member})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(parse(&body)["code"], "uber_sign_in_off");
+}
+
+#[tokio::test]
+async fn the_list_names_only_people_still_in_the_household() {
+    let p = pond().await;
+    p.secrets
+        .set(&format!("UBER_REFRESH_TOKEN:{}", p.member), "r")
+        .await
+        .unwrap();
+    p.secrets
+        .set("UBER_REFRESH_TOKEN:someone-no-longer-here", "r")
+        .await
+        .unwrap();
+
+    let (status, list) = call(
+        &p.loopback,
+        Method::GET,
+        "/api/v1/uber/accounts",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(parse(&list)["connected"], json!([p.member]));
+}
+
+#[tokio::test]
+async fn a_sign_in_left_unfinished_for_ten_minutes_expires() {
+    let _turn = CREDENTIALS_TURN.lock().await;
+    let service = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/uber/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"client_id": "uber-app"})))
+        .mount(&service)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/uber/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 3600
+        })))
+        .expect(0)
+        .mount(&service)
+        .await;
+    let _at = CredentialsAt::set(&service.uri());
+    let p = pond().await;
+
+    let nonce = start_sign_in(&p).await;
+    p.state
+        .oauth_state
+        .write()
+        .await
+        .get_mut(&nonce)
+        .expect("the sign-in is pending")
+        .created_at -= pond_api::oauth_callback::SESSION_TTL + std::time::Duration::from_secs(1);
+
+    let (_, outcome) = call(
+        &p.loopback,
+        Method::GET,
+        &format!("/api/v1/oauth/status/{nonce}"),
+        None,
+        false,
+    )
+    .await;
+    let outcome = parse(&outcome);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"].as_str().unwrap().contains("expired"),
+        "{outcome}"
+    );
+
+    let (_, page) = call(
+        &p.loopback,
+        Method::GET,
+        &format!("/api/v1/oauth/callback?code=good-code&state={nonce}"),
+        None,
+        false,
+    )
+    .await;
+    assert!(!page.contains("Uber is connected"), "{page}");
+    assert_eq!(uber_keys(&p).await, Vec::<String>::new());
 }

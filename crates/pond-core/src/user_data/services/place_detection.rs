@@ -192,7 +192,7 @@ pub async fn detect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user_data::ports::place_lookup::PlaceFix;
+    use crate::user_data::ports::place_lookup::{PlaceCandidate, PlaceFix};
     use anyhow::{anyhow, Result};
     use async_trait::async_trait;
 
@@ -201,6 +201,22 @@ mod tests {
     impl PlaceLookup for Geo {
         async fn by_name(&self, _q: &str) -> Result<PlaceFix> {
             self.0.clone().ok_or_else(|| anyhow!("no such place"))
+        }
+        async fn candidates(
+            &self,
+            _q: &str,
+            _country_code: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<PlaceCandidate>> {
+            Ok(self
+                .0
+                .clone()
+                .map(|fix| PlaceCandidate {
+                    fix,
+                    country_code: None,
+                })
+                .into_iter()
+                .collect())
         }
     }
 

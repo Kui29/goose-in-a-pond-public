@@ -30,9 +30,20 @@ pub trait NotificationSender: Send + Sync {
     async fn broadcast(&self, notification: Notification) -> Result<()>;
 }
 
+/// What became of a notification for one household member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemberDelivery {
+    /// Queued for these devices of theirs; never empty.
+    Reached(Vec<String>),
+    /// The member has no paired device of their own.
+    NoPhone,
+    /// Nothing was delivered: their devices could not be read, the id is not a member, or every
+    /// write failed. The reason is for logs.
+    Failed(String),
+}
+
 /// Driven Port: deliver to one household member's own devices, never a broadcast.
 #[async_trait]
 pub trait MemberNotifier: Send + Sync {
-    /// Ids of the devices it was delivered to; empty means it reached nobody.
-    async fn notify_member(&self, profile_id: &str, notification: Notification) -> Vec<String>;
+    async fn notify_member(&self, profile_id: &str, notification: Notification) -> MemberDelivery;
 }

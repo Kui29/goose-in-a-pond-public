@@ -107,6 +107,17 @@ impl DraftAuthority for RepoDraftAuthority {
         Some((resolved.scope, resolved.source))
     }
 
+    async fn sole_member(&self) -> Option<String> {
+        match self.profiles.list().await {
+            Ok(profiles) if profiles.len() == 1 => profiles.into_iter().next().map(|p| p.id),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not list household members");
+                None
+            }
+        }
+    }
+
     async fn audit(&self, engine_session_id: &str, action: &str, decision: &PolicyDecision) {
         let Some(policy) = &self.policy else {
             return;
@@ -122,5 +133,40 @@ impl DraftAuthority for RepoDraftAuthority {
                 decision,
             )
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user_data::domain::profile::CreateProfileRequest;
+    use crate::user_data::mocks::mock_profile::MockProfileRepository;
+    use crate::user_data::mocks::mock_session::InMemorySessionStorage;
+    use crate::user_data::mocks::mock_settings::MockSettingsRepository;
+
+    async fn pond(members: &[&str]) -> RepoDraftAuthority {
+        let profiles = Arc::new(MockProfileRepository::new());
+        for name in members {
+            profiles
+                .create(CreateProfileRequest {
+                    display_name: name.to_string(),
+                    avatar_emoji: "*".to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        RepoDraftAuthority::new(
+            Arc::new(MockSettingsRepository::new()),
+            Arc::new(InMemorySessionStorage::new()),
+            profiles,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn only_a_one_member_household_has_a_sole_member() {
+        assert!(pond(&["Liz"]).await.sole_member().await.is_some());
+        assert_eq!(pond(&["Liz", "Jerry"]).await.sole_member().await, None);
+        assert_eq!(pond(&[]).await.sole_member().await, None);
     }
 }

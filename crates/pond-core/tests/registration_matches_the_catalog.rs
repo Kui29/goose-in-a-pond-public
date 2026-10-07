@@ -225,6 +225,11 @@ const DISPATCHER_EXCLUSIONS: &[(&str, &str)] = &[
         "giap-orchestrator",
         "delegation needs a live turn authority, which only a chat turn publishes",
     ),
+    (
+        "giap-travel",
+        "off by default (ext_travel_enabled) and the dispatcher reads no settings; push and \
+         book_ride need an engine session these routes do not carry",
+    ),
 ];
 
 /// `dispatcher.rs` is a second live dispatch path (the direct `/api/v1` tool routes).

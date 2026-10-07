@@ -10,7 +10,7 @@ use crate::mcp::domain::tool_group::{
     group_of_tool, groups_denied_to_guests, groups_denied_to_subagents,
 };
 #[cfg(test)]
-use crate::mcp::domain::tool_group::{ORCHESTRATOR_EXTENSION, TOOLKIT_EXTENSION};
+use crate::mcp::domain::tool_group::{ORCHESTRATOR_EXTENSION, TOOLKIT_EXTENSION, TRAVEL_EXTENSION};
 use crate::models::services::context::model_class::{provider_locality, ProviderLocality};
 use crate::user_data::domain::profile::ProfileScope;
 use chrono::{DateTime, Utc};
@@ -782,7 +782,7 @@ impl TaskRun {
 /// The groups no subagent may hold, each with the control a subagent would bypass.
 /// Kept apart from [`groups_denied_to_subagents`] so a removal from that list fails a test.
 #[cfg(test)]
-const GROUPS_NO_SUBAGENT_MAY_HOLD: [(&str, &str); 5] = [
+const GROUPS_NO_SUBAGENT_MAY_HOLD: [(&str, &str); 6] = [
     (
         TOOLKIT_EXTENSION,
         "enable_tool_group WIDENS an allow-set keyed by the process-global current_session_id(), \
@@ -809,6 +809,11 @@ const GROUPS_NO_SUBAGENT_MAY_HOLD: [(&str, &str); 5] = [
         "delegate is refused for a child anyway -- may_delegate() is false at depth 1 -- so this \
          one is withheld for the OTHER reason the list exists: a tool a 2-4B model can see but \
          cannot use costs turns off a budget of six discovering that",
+    ),
+    (
+        TRAVEL_EXTENSION,
+        "book_ride puts a ride offer, paid from a member's own Uber account, on that member's \
+         phone; a subagent has no identity to address it to and no approval path",
     ),
 ];
 

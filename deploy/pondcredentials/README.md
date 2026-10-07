@@ -139,8 +139,10 @@ echo 'UBER_CLIENT_ID=<CLIENT_ID>' >> .env                                  # on 
 scp uber_client_secret root@<DROPLET_IP>:/opt/pondcredentials/runtime/secrets/uber_client_secret
 ```
 
-Register `http://127.0.0.1:<port>/api/v1/oauth/callback` in the Uber app for each port ponds use
-(4000 to 4009). Then, on the droplet:
+Register `http://127.0.0.1:<port>/api/v1/oauth/callback` in the Uber app for each port ponds use, or
+that pond's sign-ins are refused: 4000 to 4009 for the desktop app and `pond-server serve`, and 8080 to
+8089 for the Jetson service, which runs on 8080. A pond takes the next port up when its own is busy,
+so a pond started with another `--port` needs that port and the nine after it. Then, on the droplet:
 
 ```bash
 scp deploy/pondcredentials/compose.uber.yaml root@<DROPLET_IP>:/opt/pondcredentials/   # from your computer

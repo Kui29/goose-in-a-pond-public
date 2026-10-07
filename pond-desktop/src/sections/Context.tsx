@@ -7,6 +7,7 @@ import { Plus, Search, RefreshCw, Pencil, Trash2, Check, X } from "lucide-react"
 import { api } from "../api/PondApiClient";
 import type { ContextIndexHealth, MemoryFragment } from "../api/types";
 import { ConnectionsPanel } from "../connections/ConnectionsPanel";
+import { UberAccountsPanel } from "../connections/UberAccountsPanel";
 import { useAppState } from "../state/AppContext";
 import { Collected } from "./context/Collected";
 import { Lineage } from "./context/Lineage";
@@ -17,7 +18,7 @@ type View = "remembered" | "collected" | "sources" | "lineage";
 const VIEWS: Array<{ id: View; label: string; blurb: string }> = [
   { id: "remembered", label: "Remembered", blurb: "What you told it" },
   { id: "collected", label: "Collected", blurb: "What it read from your accounts" },
-  { id: "sources", label: "Sources", blurb: "Where else it may read" },
+  { id: "sources", label: "Sources", blurb: "Accounts it may read or use" },
   { id: "lineage", label: "Lineage", blurb: "How it all connects" },
 ];
 
@@ -289,7 +290,12 @@ export function Context() {
 
       {view === "collected" && <Collected sessionId={sessionId} />}
 
-      {view === "sources" && <ConnectionsPanel sessionId={sessionId} />}
+      {view === "sources" && (
+        <>
+          <ConnectionsPanel sessionId={sessionId} />
+          <UberAccountsPanel />
+        </>
+      )}
 
       {view === "lineage" && (
         <Lineage memories={memories} health={health} onRebuilt={() => void load()} />

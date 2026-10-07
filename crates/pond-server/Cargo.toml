@@ -164,6 +164,7 @@ pond-adapters-caldav       = { workspace = true }
 rustls                     = { workspace = true }
 pond-adapters-imap         = { workspace = true }
 pond-adapters-weather      = { workspace = true }
+pond-adapters-uber         = { workspace = true }
 pond-adapters-llamafile = { path = "../../crates/pond-adapters-llamafile" }
 pond-adapters-ollama = { path = "../../crates/pond-adapters-ollama" }
 pond-adapters-whisper = { path = "../../crates/pond-adapters-whisper" }

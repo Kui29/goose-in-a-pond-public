@@ -121,11 +121,15 @@ pub fn register_giap_extensions(
         registered.push("giap-sensors".into());
     }
 
-    // Destination names go to the geocoder, the one outbound call; the links are built locally.
+    // Place names go to the geocoder, the one outbound call; the links are built locally. The
+    // settings say where home is, so a name matches the place near it.
     if settings.ext_travel_enabled {
-        pond_mcp_server::init_travel_deps(Some(Arc::new(pond_adapters_weather::Geocoder::new(
-            pond_mcp_server::build_http_client(),
-        ))));
+        pond_mcp_server::init_travel_deps(
+            Some(Arc::new(pond_adapters_weather::Geocoder::new(
+                pond_mcp_server::build_http_client(),
+            ))),
+            Some(settings_repo.clone()),
+        );
         register_builtin_extension(
             pond_mcp_server::TRAVEL_EXTENSION,
             pond_mcp_server::spawn_travel_server,

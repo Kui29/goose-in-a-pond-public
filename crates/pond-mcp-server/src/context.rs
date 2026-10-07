@@ -524,6 +524,9 @@ mod tests {
                 .clone()
                 .map(|s| (s, IdentificationSource::Explicit))
         }
+        async fn sole_member(&self) -> Option<String> {
+            None
+        }
         async fn audit(&self, _session: &str, _action: &str, _decision: &PolicyDecision) {}
     }
 

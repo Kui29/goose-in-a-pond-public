@@ -6,6 +6,7 @@ pub mod hf_cache_migration;
 pub mod host_credential;
 pub mod listeners;
 pub mod llm_memory_consolidator;
+pub mod ride_booking;
 pub mod schedule_executors;
 
 #[cfg(unix)]

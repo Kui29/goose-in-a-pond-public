@@ -3466,33 +3466,7 @@ async fn run_server(
         pond_infra::sqlite_notification_queue::SqliteNotificationQueue::new(db.system.clone()),
     );
 
-    // FCM v1 when a service-account key exists (data-only wake pings, no content via Google).
-    let fcm_key_path = std::env::var("POND_FCM_KEY_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| data_dir.join("secrets").join("fcm-service-account.json"));
-    let push_relay: Arc<dyn pond_core::mcp::ports::notification_relay::NotificationRelay> =
-        if fcm_key_path.exists() {
-            match pond_infra::fcm_push_relay::FcmPushRelay::from_key_file(
-                &fcm_key_path,
-                push_token_repo.clone(),
-            ) {
-                Ok(relay) => Arc::new(relay),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        path = %fcm_key_path.display(),
-                        "FCM key unusable; background push falls back to the logging stub"
-                    );
-                    Arc::new(pond_infra::stub_push_relay::StubPushRelay::new(
-                        push_token_repo.clone(),
-                    ))
-                }
-            }
-        } else {
-            Arc::new(pond_infra::stub_push_relay::StubPushRelay::new(
-                push_token_repo.clone(),
-            ))
-        };
+    let push_relay = push_relay(&data_dir, push_token_repo.clone());
     // Required: without it `send_to_profile` silently answers `AttributionUnavailable`.
     let device_attribution: Arc<
         dyn pond_core::user_data::ports::device_attribution::DeviceAttribution,
@@ -3515,6 +3489,18 @@ async fn run_server(
     pond_mcp_server::init_notification_sender(notification_sender.clone());
     // Profile-addressed, so a tool's link reaches the speaker's phones and no one else's.
     pond_mcp_server::init_member_notifier(targeted_notification_sender.clone());
+    // Read now, as the extensions were registered: an unreadable row leaves booking off.
+    let travel_enabled = settings_repo
+        .get()
+        .await
+        .map(|s| s.ext_travel_enabled)
+        .unwrap_or(false);
+    pond_server::ride_booking::start(
+        travel_enabled,
+        secret_repo.clone(),
+        pond_api::musickit::managed_url(),
+        targeted_notification_sender.clone(),
+    );
 
     // Converge Matter only now: a first enable installs a controller (minutes), and the notice
     // explaining the wait needs the sender. `apply` returns immediately.
@@ -4642,6 +4628,34 @@ async fn build_speech_detector(
     }
 }
 
+/// Background wake-ups for phones: FCM v1 when a service-account key exists (data-only pings,
+/// no content via Google), else the logging stub.
+fn push_relay(
+    data_dir: &std::path::Path,
+    push_tokens: Arc<dyn pond_core::user_data::ports::push_token::PushTokenRepository>,
+) -> Arc<dyn pond_core::mcp::ports::notification_relay::NotificationRelay> {
+    let fcm_key_path = std::env::var("POND_FCM_KEY_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| data_dir.join("secrets").join("fcm-service-account.json"));
+    if !fcm_key_path.exists() {
+        return Arc::new(pond_infra::stub_push_relay::StubPushRelay::new(push_tokens));
+    }
+    match pond_infra::fcm_push_relay::FcmPushRelay::from_key_file(
+        &fcm_key_path,
+        push_tokens.clone(),
+    ) {
+        Ok(relay) => Arc::new(relay),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %fcm_key_path.display(),
+                "FCM key unusable; background push falls back to the logging stub"
+            );
+            Arc::new(pond_infra::stub_push_relay::StubPushRelay::new(push_tokens))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_chat(
     provider: Option<&str>,
@@ -4727,6 +4741,41 @@ async fn run_chat(
     // The mode is a process-global defaulting to `Open`; each entry point must install it.
     pond_core::shared::services::egress::set_network_mode(
         pond_core::shared::services::egress::NetworkMode::parse(&settings.network_mode),
+    );
+
+    // giap-travel's links and ride offers reach the speaker's phone from this process too: queued
+    // in the shared database, which the serve process hands to the phone, and woken by the relay.
+    let (member_notification_tx, _) =
+        tokio::sync::broadcast::channel::<pond_core::mcp::ports::notification::Notification>(16);
+    pond_mcp_server::init_member_notifier(Arc::new(
+        pond_infra::broadcast_notification_sender::BroadcastNotificationSender::new(
+            member_notification_tx,
+            Arc::new(
+                pond_infra::sqlite_notification_queue::SqliteNotificationQueue::new(
+                    db.system.clone(),
+                ),
+            ),
+            Some(push_relay(
+                &data_dir,
+                Arc::new(
+                    pond_infra::sqlite_push_token::SqlitePushTokenRepository::new(
+                        db.system.clone(),
+                    ),
+                ),
+            )),
+        )
+        .with_device_attribution(Arc::new(
+            pond_infra::sqlite_device_attribution::SqliteDeviceAttribution::new(db.system.clone()),
+        )),
+    ));
+    // Which members connected Uber, for book_ride. The serve process owns the store; this one
+    // only reads it.
+    pond_server::ride_booking::install_accounts(
+        settings.ext_travel_enabled,
+        Some(Arc::new(
+            pond_infra::file_secret_repository::ReadOnlySecretStore::new(&data_dir),
+        )),
+        pond_api::musickit::managed_url(),
     );
 
     // Before any ONNX init (else ORT_DYLIB_PATH is unset and Piper::new() hangs), and after the

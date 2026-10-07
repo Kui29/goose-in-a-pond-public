@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { UberAccountsPanel } from "./UberAccountsPanel";
 import { api } from "../api/PondApiClient";
+import { ApiError } from "../api/types";
 import { openExternal } from "../api/followSignIn";
 
 vi.mock("../api/PondApiClient", () => ({
@@ -90,10 +91,78 @@ describe("UberAccountsPanel", () => {
     await waitFor(() => expect(screen.getAllByText("Connected")).toHaveLength(1));
   });
 
-  it("shows the server's reason when Uber connections cannot be read", async () => {
-    m.listProfiles.mockResolvedValue({ profiles: [] });
-    m.uberAccounts.mockRejectedValue(new Error("host_credential_required"));
+  it("keeps the household, status unknown, when the pond will not say who is connected", async () => {
+    household([]);
+    m.uberAccounts.mockRejectedValue(new ApiError(403, "host_credential_required"));
     render(<UberAccountsPanel />);
-    expect((await screen.findByRole("alert")).textContent).toContain("host_credential_required");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("only be changed on the pond itself");
+    expect(alert.textContent).not.toContain("host_credential_required");
+    expect(screen.getByText("Liz")).toBeTruthy();
+    expect(screen.getAllByText("Status unknown")).toHaveLength(2);
+    expect(screen.queryByText("Add a household member first.")).toBeNull();
+    for (const button of screen.getAllByRole("button", { name: "Connect Uber" })) {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+    }
+  });
+
+  it("says what a refusal means instead of a raw code", async () => {
+    household([]);
+    m.uberAccounts.mockRejectedValue(new ApiError(503, "host_credential_unavailable"));
+    render(<UberAccountsPanel />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Try again");
+    expect(alert.textContent).not.toContain("host_credential_unavailable");
+  });
+
+  it("names an older pond that answers with its web page", async () => {
+    household([]);
+    m.uberAccounts.mockResolvedValue(undefined as unknown as { connected: string[] });
+    render(<UberAccountsPanel />);
+    expect((await screen.findByRole("alert")).textContent).toContain("does not know about Uber accounts yet");
+    expect(screen.getAllByText("Status unknown")).toHaveLength(2);
+  });
+
+  it("reads again on Try again", async () => {
+    household(["p-liz"]);
+    m.uberAccounts.mockRejectedValueOnce(new ApiError(503, "could not read Uber connections", "uber_accounts_unreadable"));
+    render(<UberAccountsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await screen.findByText("Connected");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("says so when the household itself cannot be read", async () => {
+    m.listProfiles.mockRejectedValue(new ApiError(500, "database is locked"));
+    m.uberAccounts.mockResolvedValue({ connected: [] });
+    render(<UberAccountsPanel />);
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not read who is in the household");
+    expect(screen.queryByText("Add a household member first.")).toBeNull();
+  });
+
+  it("explains that sign-in is turned off on this pond", async () => {
+    household([]);
+    m.connectUber.mockRejectedValue(
+      new ApiError(503, "Uber sign-in needs Jarida's credentials service", "uber_sign_in_off"),
+    );
+    render(<UberAccountsPanel />);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Connect Uber" }))[0]);
+    expect((await screen.findByRole("alert")).textContent).toContain("Uber sign-in is turned off on this pond");
+  });
+
+  it("reports a browser that would not open, and does not wait for a sign-in", async () => {
+    household([]);
+    m.connectUber.mockResolvedValue({ auth_url: "https://auth.uber.com/x", state: "n-3" });
+    vi.mocked(openExternal).mockRejectedValueOnce(new Error("no handler for https"));
+    render(<UberAccountsPanel />);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Connect Uber" }))[0]);
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not open your browser");
+    expect(m.getOAuthStatus).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Connect Uber" }).every((b) => !(b as HTMLButtonElement).disabled),
+      ).toBe(true),
+    );
   });
 });

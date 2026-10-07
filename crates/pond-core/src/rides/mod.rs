@@ -5,6 +5,7 @@
 pub mod booking;
 pub mod domain;
 pub mod ports;
+pub mod tracking;
 
 #[cfg(any(test, feature = "test-mocks"))]
 pub mod mocks;
