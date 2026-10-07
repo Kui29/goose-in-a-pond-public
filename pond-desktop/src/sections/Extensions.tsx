@@ -27,23 +27,13 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { api } from "../api/PondApiClient";
-import { invoke, isDesktopShell } from "../shell";
+import { followSignIn, openExternal } from "../api/followSignIn";
 import { useAppState } from "../state/AppContext";
 import { useConfirm, ErrorBanner } from "../components/shared";
 import { PlayerSignIn } from "./PlayerSignIn";
 import { splitAdvanced } from "./signInView";
 import { secretStatusOf, type SecretStatus } from "./secretStatus";
 import type { Extension, AddExtensionRequest, MarketplaceExtension, SecretRequirement, AgentTool } from "../api/types";
-
-/** Open a URL in the real browser. In the shell it must go via the main process:
- *  `window.open` on an app:// page opens another in-app window. */
-async function openExternal(url: string) {
-  if (isDesktopShell()) {
-    await invoke("open_external", { url });
-    return;
-  }
-  window.open(url, "_blank", "noopener,noreferrer");
-}
 
 // ── Secret Config Modal ───────────────────────────────────────
 
@@ -195,9 +185,6 @@ function spotifyRedirectUri(): string {
   return `http://127.0.0.1:${port}/api/v1/oauth/callback`;
 }
 
-/** Browser hand-off timeout; generous because the user may have to log in and pick an account. */
-const OAUTH_POLL_TIMEOUT_MS = 5 * 60 * 1000;
-
 /** OAuth sign-in block for a single oauth_flow requirement. */
 function OAuthBlock({
   req,
@@ -215,14 +202,12 @@ function OAuthBlock({
 }) {
   const [oauthState, setOauthState] = useState<"idle" | "polling" | "done" | "reconnecting">("idle");
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const flowRef = useRef<{ stop: () => void } | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function stopPoll() {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+    flowRef.current?.stop();
+    flowRef.current = null;
   }
 
   useEffect(() => () => {
@@ -239,40 +224,23 @@ function OAuthBlock({
       const { auth_url, state } = await api.initiateOAuth(req.key, extensionId);
       openExternal(auth_url);
 
-      // Poll THIS flow by its state nonce: on re-authorisation the store already holds the old
-      // token, so watching it would report success before the user signs in.
-      const startedAt = Date.now();
-      pollRef.current = setInterval(async () => {
-        try {
-          const { status, error: flowError } = await api.getOAuthStatus(state);
-
-          if (status === "completed") {
-            stopPoll();
-            setOauthState("done");
-            onAuthorized();
-            reconnectTimerRef.current = setTimeout(() => {
-              setOauthState("reconnecting");
-            }, 800);
-            return;
-          }
-
-          if (status === "failed") {
-            stopPoll();
-            setOauthState("idle");
-            setError(flowError || "Sign-in failed. Please try again.");
-            return;
-          }
-
-          // "pending" and "unknown" both mean keep waiting: a server restarted mid-flow reports "unknown".
-          if (Date.now() - startedAt > OAUTH_POLL_TIMEOUT_MS) {
-            stopPoll();
-            setOauthState("idle");
-            setError("Timed out waiting for sign-in to complete. Please try again.");
-          }
-        } catch {
-          // ignore transient check failures, keep polling
-        }
-      }, 2000);
+      const flow = followSignIn(state, { getStatus: (s) => api.getOAuthStatus(s) });
+      flowRef.current = flow;
+      const result = await flow.done;
+      flowRef.current = null;
+      if (result.outcome === "completed") {
+        setOauthState("done");
+        onAuthorized();
+        reconnectTimerRef.current = setTimeout(() => {
+          setOauthState("reconnecting");
+        }, 800);
+      } else if (result.outcome === "failed") {
+        setOauthState("idle");
+        setError(result.error || "Sign-in failed. Please try again.");
+      } else if (result.outcome === "timed_out") {
+        setOauthState("idle");
+        setError("Timed out waiting for sign-in to complete. Please try again.");
+      }
     } catch (err) {
       setOauthState("idle");
       setError(err instanceof Error ? err.message : String(err));

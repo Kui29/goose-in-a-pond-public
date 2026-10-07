@@ -336,6 +336,11 @@ export class PondApiClient {
     return this.request<T>(method, path, body, undefined, await this.hostHeaders());
   }
 
+  /** Members who connected their own Uber account on this pond (host only). */
+  uberAccounts(): Promise<{ connected: string[] }> { return this.hostRequest('GET', '/api/v1/uber/accounts'); }
+  /** Start a member's Uber sign-in; open `auth_url`, then follow `state` with `getOAuthStatus`. */
+  connectUber(profileId: string): Promise<{ auth_url: string; state: string }> { return this.hostRequest('POST', '/api/v1/uber/accounts/connect', { profile_id: profileId }); }
+  disconnectUber(profileId: string): Promise<void> { return this.hostRequest('DELETE', `/api/v1/uber/accounts/${encodeURIComponent(profileId)}`); }
   remoteStatus(): Promise<{ state: string; authUrl?: string }> { return this.hostRequest('GET', '/api/v1/remote-access'); }
   prepareRemoteIdentity(): Promise<{ household: string; publicKey: string }> { return this.hostRequest('POST', '/api/v1/remote-access/identity', {}); }
   enableRemoteAccess(config: { enabled: boolean; controlUrl: string; enrollmentUrl: string }): Promise<unknown> { return this.hostRequest('POST', '/api/v1/remote-access', config); }
