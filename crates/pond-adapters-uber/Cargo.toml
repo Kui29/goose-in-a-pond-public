@@ -15,6 +15,9 @@ serde       = { workspace = true }
 serde_json  = { workspace = true }
 chrono      = { workspace = true }
 tracing     = { workspace = true }
+urlencoding = { workspace = true }
+# One renewal at a time: Uber may rotate the refresh token, and a second concurrent one would fail.
+tokio       = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio    = { workspace = true }

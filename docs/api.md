@@ -119,6 +119,9 @@ All errors return JSON:
 | POST | /recipes | Protected | Create a recipe |
 | PUT | /recipes/{id} | Protected | Update a recipe |
 | DELETE | /recipes/{id} | Protected | Delete a recipe |
+| GET | /uber/accounts | Protected, host only | Members who have connected Uber |
+| POST | /uber/accounts/connect | Protected, host only | Start a member's Uber sign-in |
+| DELETE | /uber/accounts/{profile_id} | Protected, host only | Forget a member's Uber sign-in on this pond |
 
 ---
 
@@ -1795,6 +1798,48 @@ Partial update.
 **Response 204** — no body
 
 ---
+
+## Uber accounts
+
+Each household member connects their own Uber account, so rides go on their own Uber payment
+method. Sign-in goes through Jarida's credentials service (`POND_CREDENTIALS_URL`), which adds the
+Uber app's client secret; the member's tokens are kept in this pond's secret store only. See
+[pondcredentials](architecture/pondcredentials.md).
+
+**Host only:** every route needs the request to come from this machine **and** carry the host
+credential (`X-Pond-Host-Credential`). A paired phone gets 403.
+
+### POST /uber/accounts/connect
+
+**Request**
+```json
+{ "profile_id": "p-1" }
+```
+
+**Response 200**
+```json
+{ "auth_url": "https://auth.uber.com/oauth/v2/authorize?client_id=...&state=...", "state": "..." }
+```
+
+Open `auth_url` in a browser. Uber returns to `/oauth/callback`, which finishes the sign-in; follow
+it with `GET /oauth/status/{state}`.
+
+| Status | Meaning |
+|---|---|
+| 404 | No such household member |
+| 502 | The credentials service could not start an Uber sign-in |
+| 503 | No secret store, or the credentials service is turned off (`POND_CREDENTIALS_URL=off`) |
+
+### GET /uber/accounts
+
+**Response 200**
+```json
+{ "connected": ["p-1"] }
+```
+
+### DELETE /uber/accounts/{profile_id}
+
+**Response 204.** Forgets the member's tokens on this pond. Their Uber account is untouched.
 
 ## Error Codes Summary
 

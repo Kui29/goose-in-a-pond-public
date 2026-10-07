@@ -2,6 +2,8 @@
 //! cancellation, each on the member's own Uber account. The `request` scope is privileged, so
 //! production use needs Uber's Full Access approval; the sandbox works without it.
 
+pub mod accounts;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

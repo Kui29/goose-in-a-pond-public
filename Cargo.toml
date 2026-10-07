@@ -238,6 +238,7 @@ pond-adapters-silero           = { path = "crates/pond-adapters-silero" }
 pond-adapters-caldav           = { path = "crates/pond-adapters-caldav" }
 pond-adapters-imap             = { path = "crates/pond-adapters-imap" }
 pond-adapters-weather          = { path = "crates/pond-adapters-weather" }
+pond-adapters-uber             = { path = "crates/pond-adapters-uber" }
 pond-adapters-mcp-memory       = { path = "crates/pond-adapters-mcp-memory" }
 pond-adapters-local-inference  = { path = "crates/pond-adapters-local-inference" }
 pond-adapters-face-onnx        = { path = "crates/pond-adapters-face-onnx" }

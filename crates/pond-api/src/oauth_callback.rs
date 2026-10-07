@@ -15,6 +15,8 @@ pub struct PkceSession {
     pub code_verifier: String,
     /// Optional marketplace extension to auto-install after successful auth.
     pub extension_id: Option<String>,
+    /// The household member a per-member sign-in (Uber) is for; `None` for household-wide ones.
+    pub profile_id: Option<String>,
     /// When the session was created — allows stale session cleanup.
     pub created_at: std::time::Instant,
 }

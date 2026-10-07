@@ -11352,6 +11352,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "urlencoding",
  "wiremock",
 ]
 
@@ -11462,6 +11463,7 @@ dependencies = [
  "pond-adapters-llamafile",
  "pond-adapters-local-inference",
  "pond-adapters-ollama",
+ "pond-adapters-uber",
  "pond-adapters-weather",
  "pond-api",
  "pond-apple-token",

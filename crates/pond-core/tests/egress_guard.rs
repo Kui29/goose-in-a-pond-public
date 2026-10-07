@@ -37,6 +37,8 @@ const EGRESS_TRACKED: &[&str] = &[
     "crates/pond-adapters-caldav/src/lib.rs",
     // Uber's Riders API, on the member's own account; Uber's hosts stay Sensitive.
     "crates/pond-adapters-uber/src/lib.rs",
+    // Uber sign-in and renewal, through the credentials service (`giap-credentials`).
+    "crates/pond-adapters-uber/src/accounts.rs",
     "crates/pond-adapters-weather/src/lib.rs",
     "crates/pond-hf-cache/src/lib.rs",
     "crates/pond-infra/src/fcm_push_relay.rs",

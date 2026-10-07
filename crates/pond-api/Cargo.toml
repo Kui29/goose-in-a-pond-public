@@ -25,6 +25,7 @@ pond-adapters-llamafile = { workspace = true }
 pond-adapters-ollama = { path = "../pond-adapters-ollama" }
 pond-adapters-local-inference = { workspace = true, optional = true }
 pond-adapters-weather = { workspace = true }
+pond-adapters-uber    = { workspace = true }
 # NO `goose` dependency. This crate is the HTTP edge of a hexagonal core and must
 # stay framework-free — and it is in CI's "fast crates" list, which is defined as
 # the crates that do not pull the submodule. The one former use,

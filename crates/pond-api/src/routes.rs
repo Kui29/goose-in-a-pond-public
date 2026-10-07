@@ -304,6 +304,15 @@ pub fn api_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/oauth/refresh", post(oauth_refresh_handler))
         .route("/oauth/providers", get(oauth_providers_handler))
         .route("/oauth/status/{state}", get(oauth_status_handler))
+        .route("/uber/accounts", get(crate::uber_accounts::list))
+        .route(
+            "/uber/accounts/connect",
+            post(crate::uber_accounts::connect),
+        )
+        .route(
+            "/uber/accounts/{profile_id}",
+            axum::routing::delete(crate::uber_accounts::disconnect),
+        )
         // ── Music player bridge and Apple Music developer tokens ───────────────
         .route(
             "/musickit/developer-token",
@@ -11292,6 +11301,7 @@ async fn oauth_authorize_handler(
                 provider_id: provider.id.clone(),
                 code_verifier,
                 extension_id,
+                profile_id: None,
                 created_at: std::time::Instant::now(),
             },
         );
@@ -11321,7 +11331,7 @@ async fn oauth_authorize_handler(
 }
 
 /// Escapes untrusted text (stderr, provider error bodies) for the OAuth result pages.
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -11378,6 +11388,11 @@ async fn oauth_callback_handler(
             .into_response();
         }
     };
+
+    // Per-member, and its client secret lives with Jarida's credentials service.
+    if session.provider_id == crate::uber_accounts::PROVIDER_ID {
+        return crate::uber_accounts::finish_sign_in(&state, session, &code, &state_nonce).await;
+    }
 
     let providers = pond_core::user_data::services::oauth_providers::builtin_oauth_providers();
     let provider = match providers.iter().find(|p| p.id == session.provider_id) {
