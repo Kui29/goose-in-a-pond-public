@@ -1,5 +1,6 @@
 //! pondcredentials: hands out Apple Music developer tokens to ponds, so a household needs no Apple
-//! developer key of its own. It holds one MusicKit key and answers one question.
+//! developer key of its own. It holds one MusicKit key and answers one question. Optionally it
+//! also relays Uber sign-ins, adding Jarida's Uber client secret (see [`uber`]).
 //!
 //! What it deliberately does not do: identify callers, keep an address, or hold a user's Music
 //! User Token (that never leaves the household's own player). A token is not secret, since every
@@ -20,6 +21,8 @@ use axum::{Json, Router};
 use pond_apple_token::{SigningCredentials, APPLE_MAX_TTL};
 use serde_json::json;
 
+pub mod uber;
+
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
 // ── Configuration ────────────────────────────────────────────
@@ -34,6 +37,8 @@ pub struct Config {
     pub refresh_after: Duration,
     pub rate_per_minute: u32,
     pub trust_proxy: bool,
+    /// `None`: the Uber routes answer 503 and the service serves MusicKit tokens as before.
+    pub uber: Option<uber::UberConfig>,
 }
 
 fn ten_chars(name: &str, value: &str) -> Result<(), String> {
@@ -63,6 +68,8 @@ impl Config {
         let key_id = need("APPLE_KEY_ID")?;
         ten_chars("APPLE_TEAM_ID", &team_id)?;
         ten_chars("APPLE_KEY_ID", &key_id)?;
+
+        let uber = uber::UberConfig::from_env(&get, &read_file)?;
 
         let path = need("APPLE_PRIVATE_KEY_FILE")?;
         let private_key =
@@ -102,6 +109,7 @@ impl Config {
             refresh_after: Duration::from_secs(refresh_hours * 3600),
             rate_per_minute: rate as u32,
             trust_proxy: matches!(get("TRUST_PROXY").as_deref(), Some("1" | "true")),
+            uber,
         })
     }
 }
@@ -256,6 +264,7 @@ pub fn client_of(headers: &HeaderMap, peer: SocketAddr, trust_proxy: bool) -> Cl
 pub struct Metrics {
     pub issued: AtomicU64,
     pub limited: AtomicU64,
+    pub uber_relayed: AtomicU64,
 }
 
 pub struct AppState {
@@ -263,6 +272,7 @@ pub struct AppState {
     pub limiter: RateLimiter,
     pub metrics: Metrics,
     pub trust_proxy: bool,
+    pub uber: Option<uber::UberRelay>,
     pub started: Instant,
     pub clock: Box<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -277,11 +287,14 @@ pub fn unix_now() -> u64 {
 impl AppState {
     pub fn new(config: &Config) -> Result<AppState, String> {
         let now = unix_now();
+        let issuer = Issuer::new(config, now)?;
+        let uber = config.uber.as_ref().map(uber::UberRelay::new).transpose()?;
         Ok(AppState {
-            issuer: Issuer::new(config, now)?,
+            issuer,
             limiter: RateLimiter::new(config.rate_per_minute, Duration::from_secs(60), 10_000),
             metrics: Metrics::default(),
             trust_proxy: config.trust_proxy,
+            uber,
             started: Instant::now(),
             clock: Box::new(unix_now),
         })
@@ -292,6 +305,28 @@ fn plain(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// `Some(429)` when this client is over its allowance; every route shares one allowance.
+fn over_limit(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> Option<Response> {
+    let client = client_of(headers, peer, state.trust_proxy);
+    let retry_after = state.limiter.check(&client, Instant::now()).err()?;
+    state.metrics.limited.fetch_add(1, Ordering::Relaxed);
+    let mut resp = plain(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many requests. Try again later.",
+    );
+    if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
+        resp.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    Some(resp)
+}
+
+/// Nothing in between should keep a copy of a token.
+fn no_store(mut resp: Response) -> Response {
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
 async fn developer_token(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -300,31 +335,20 @@ async fn developer_token(
     // its body would accept an upload of any size.
     _body: Bytes,
 ) -> Response {
-    let client = client_of(&headers, peer, state.trust_proxy);
-    if let Err(retry_after) = state.limiter.check(&client, Instant::now()) {
-        state.metrics.limited.fetch_add(1, Ordering::Relaxed);
-        let mut resp = plain(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many requests. Try again later.",
-        );
-        if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
-            resp.headers_mut().insert(header::RETRY_AFTER, v);
-        }
-        return resp;
+    if let Some(limited) = over_limit(&state, &headers, peer) {
+        return limited;
     }
 
     match state.issuer.token((state.clock)()) {
         Ok(issued) => {
             state.metrics.issued.fetch_add(1, Ordering::Relaxed);
-            let mut resp = Json(json!({
-                "token": issued.token,
-                "expires_at": issued.expires_at,
-            }))
-            .into_response();
-            // A token is for the one household that asked; nothing in between should keep a copy.
-            resp.headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            resp
+            no_store(
+                Json(json!({
+                    "token": issued.token,
+                    "expires_at": issued.expires_at,
+                }))
+                .into_response(),
+            )
         }
         Err(error) => {
             // The reason can name the key; the caller gets nothing it could use.
@@ -337,11 +361,76 @@ async fn developer_token(
     }
 }
 
+fn uber_not_configured() -> Response {
+    plain(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "This service does not relay Uber sign-ins.",
+    )
+}
+
+fn relayed(state: &AppState, outcome: uber::Relayed) -> Response {
+    match outcome {
+        uber::Relayed::Tokens(tokens) => {
+            state.metrics.uber_relayed.fetch_add(1, Ordering::Relaxed);
+            no_store(Json(tokens).into_response())
+        }
+        uber::Relayed::Refused(code) => no_store(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Uber refused the sign-in.", "uber_error": code })),
+            )
+                .into_response(),
+        ),
+        uber::Relayed::BadRequest(why) => plain(StatusCode::BAD_REQUEST, why),
+        uber::Relayed::Unavailable => plain(StatusCode::BAD_GATEWAY, "Uber could not be reached."),
+    }
+}
+
+async fn uber_client(State(state): State<Arc<AppState>>) -> Response {
+    match &state.uber {
+        Some(relay) => Json(json!({ "client_id": relay.client_id() })).into_response(),
+        None => uber_not_configured(),
+    }
+}
+
+async fn uber_token(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<uber::CodeExchange>,
+) -> Response {
+    if let Some(limited) = over_limit(&state, &headers, peer) {
+        return limited;
+    }
+    let Some(relay) = &state.uber else {
+        return uber_not_configured();
+    };
+    let outcome = relay.exchange_code(&request).await;
+    relayed(&state, outcome)
+}
+
+async fn uber_refresh(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<uber::Refresh>,
+) -> Response {
+    if let Some(limited) = over_limit(&state, &headers, peer) {
+        return limited;
+    }
+    let Some(relay) = &state.uber else {
+        return uber_not_configured();
+    };
+    let outcome = relay.refresh(&request).await;
+    relayed(&state, outcome)
+}
+
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     Json(json!({
         "ok": true,
         "issued": state.metrics.issued.load(Ordering::Relaxed),
         "limited": state.metrics.limited.load(Ordering::Relaxed),
+        "uber_relayed": state.metrics.uber_relayed.load(Ordering::Relaxed),
         "uptime_s": state.started.elapsed().as_secs(),
     }))
     .into_response()
@@ -354,9 +443,12 @@ async fn not_found() -> Response {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/musickit/developer-token", post(developer_token))
+        .route("/v1/uber/client", get(uber_client))
+        .route("/v1/uber/token", post(uber_token))
+        .route("/v1/uber/refresh", post(uber_refresh))
         .route("/healthz", get(healthz))
         .fallback(not_found)
-        // The question has no body; refuse anything that tries to send one of size.
+        // The biggest body is an Uber refresh token in a little JSON; refuse anything of size.
         .layer(DefaultBodyLimit::max(1024))
         .layer(axum::middleware::map_response(
             |mut resp: Response| async move {

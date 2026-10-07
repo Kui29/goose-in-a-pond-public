@@ -2,13 +2,28 @@
   request_body {
     max_size 1KB
   }
-  # Exactly one question is answerable from outside. /healthz stays on the private network:
+  # Only these questions are answerable from outside. /healthz stays on the private network:
   # it carries counters, and there is no reason to publish them.
   @token {
     method POST
     path /v1/musickit/developer-token
   }
   handle @token {
+    reverse_proxy pondcredentials:8080
+  }
+  # The Uber sign-in relay. Without compose.uber.yaml the service answers these with 503.
+  @uber_client {
+    method GET
+    path /v1/uber/client
+  }
+  @uber_tokens {
+    method POST
+    path /v1/uber/token /v1/uber/refresh
+  }
+  handle @uber_client {
+    reverse_proxy pondcredentials:8080
+  }
+  handle @uber_tokens {
     reverse_proxy pondcredentials:8080
   }
   respond 404

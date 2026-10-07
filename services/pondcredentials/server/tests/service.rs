@@ -416,7 +416,7 @@ async fn health_counts_what_was_issued_and_what_was_refused_and_nothing_else() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        ["issued", "limited", "ok", "uptime_s"]
+        ["issued", "limited", "ok", "uber_relayed", "uptime_s"]
             .map(String::from)
             .into_iter()
             .collect(),
@@ -555,4 +555,233 @@ async fn the_service_uses_its_injected_clock() {
     );
     assert!(b["expires_at"].as_u64() > a["expires_at"].as_u64());
     let _ = svc2.state.metrics.issued.load(Ordering::Relaxed);
+}
+
+// ── The Uber sign-in relay ───────────────────────────────────
+
+/// A stand-in for Uber's token endpoint, recording every form it is sent.
+async fn fake_uber() -> (String, Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>> = Arc::default();
+    let record = seen.clone();
+    let app = axum::Router::new().route(
+        "/oauth/v2/token",
+        axum::routing::post(
+            move |axum::Form(form): axum::Form<HashMap<String, String>>| {
+                let record = record.clone();
+                async move {
+                    let grant_ok = form.get("client_secret").map(String::as_str)
+                        == Some("uber-secret")
+                        && (form.get("code").map(String::as_str) == Some("good-code")
+                            || form.get("refresh_token").map(String::as_str) == Some("good-refresh"));
+                    record.lock().unwrap().push(form);
+                    if grant_ok {
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "access_token": "access-1", "refresh_token": "refresh-2",
+                                "expires_in": 2592000, "scope": "request profile",
+                                "token_type": "Bearer", "last_authenticated": 1
+                            })),
+                        )
+                    } else {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            axum::Json(serde_json::json!({"error": "invalid_grant", "detail": "secret street"})),
+                        )
+                    }
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/oauth/v2/token", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, seen)
+}
+
+fn uber_service(token_url: &str) -> Service {
+    let (pem, public) = key();
+    let mut pairs = base();
+    pairs.extend_from_slice(&[
+        ("UBER_CLIENT_ID", "uber-client"),
+        ("UBER_CLIENT_SECRET_FILE", "/run/secrets/uber"),
+        ("UBER_TOKEN_URL", token_url),
+    ]);
+    let cfg = Config::from_env(env(&pairs), move |path| {
+        Ok(if path == "/run/secrets/uber" {
+            "uber-secret\n".to_string()
+        } else {
+            pem.clone()
+        })
+    })
+    .unwrap();
+    let state = Arc::new(AppState::new(&cfg).unwrap());
+    Service {
+        app: router(state.clone()),
+        state,
+        public,
+    }
+}
+
+async fn send_json(
+    svc: &Service,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(
+        "203.0.113.9:4000".parse::<SocketAddr>().unwrap(),
+    ));
+    let resp = svc.app.clone().oneshot(req).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+const CALLBACK: &str = "http://127.0.0.1:4000/api/v1/oauth/callback";
+
+#[tokio::test]
+async fn a_code_is_exchanged_with_the_secret_added_and_only_token_fields_come_back() {
+    let (url, seen) = fake_uber().await;
+    let svc = uber_service(&url);
+    let (status, headers, body) = send_json(
+        &svc,
+        "/v1/uber/token",
+        serde_json::json!({"code": "good-code", "redirect_uri": CALLBACK}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers["cache-control"], "no-store");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["access_token"], "access-1");
+    assert_eq!(json["refresh_token"], "refresh-2");
+    assert!(json.get("last_authenticated").is_none());
+
+    let form = seen.lock().unwrap()[0].clone();
+    assert_eq!(form["grant_type"], "authorization_code");
+    assert_eq!(form["client_id"], "uber-client");
+    assert_eq!(form["redirect_uri"], CALLBACK);
+    assert!(
+        !body.contains("uber-secret"),
+        "the secret leaked into the reply"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_is_relayed() {
+    let (url, seen) = fake_uber().await;
+    let svc = uber_service(&url);
+    let (status, _, body) = send_json(
+        &svc,
+        "/v1/uber/refresh",
+        serde_json::json!({"refresh_token": "good-refresh"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(seen.lock().unwrap()[0]["grant_type"], "refresh_token");
+    assert_eq!(svc.state.metrics.uber_relayed.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn ubers_refusal_is_passed_on_as_its_code_only() {
+    let (url, _) = fake_uber().await;
+    let svc = uber_service(&url);
+    let (status, _, body) = send_json(
+        &svc,
+        "/v1/uber/token",
+        serde_json::json!({"code": "used-code", "redirect_uri": CALLBACK}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid_grant"), "{body}");
+    assert!(!body.contains("secret street"), "{body}");
+}
+
+#[tokio::test]
+async fn a_return_address_that_is_not_a_ponds_callback_is_never_sent_to_uber() {
+    let (url, seen) = fake_uber().await;
+    let svc = uber_service(&url);
+    let (status, _, _) = send_json(
+        &svc,
+        "/v1/uber/token",
+        serde_json::json!({"code": "good-code", "redirect_uri": "https://evil.example/callback"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_client_id_is_public_and_the_relay_is_off_without_uber_settings() {
+    let (url, _) = fake_uber().await;
+    let svc = uber_service(&url);
+    let (status, _, body) = send(
+        &svc,
+        "GET",
+        "/v1/uber/client",
+        "203.0.113.9:4000",
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("uber-client") && !body.contains("uber-secret"));
+
+    let plain = service(&[]);
+    let (status, _, _) = send(
+        &plain,
+        "GET",
+        "/v1/uber/client",
+        "203.0.113.9:4000",
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, _, _) = send_json(
+        &plain,
+        "/v1/uber/refresh",
+        serde_json::json!({"refresh_token": "good-refresh"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// One allowance across MusicKit and Uber: a pond cannot dodge the limit by switching routes.
+#[tokio::test]
+async fn uber_requests_share_the_rate_limit() {
+    let (url, _) = fake_uber().await;
+    let (pem, public) = key();
+    let mut pairs = base();
+    pairs.extend_from_slice(&[
+        ("RATE_LIMIT_PER_MINUTE", "1"),
+        ("UBER_CLIENT_ID", "uber-client"),
+        ("UBER_CLIENT_SECRET_FILE", "/run/secrets/uber"),
+        ("UBER_TOKEN_URL", url.as_str()),
+    ]);
+    let cfg = Config::from_env(env(&pairs), move |_| Ok(pem.clone())).unwrap();
+    let state = Arc::new(AppState::new(&cfg).unwrap());
+    let svc = Service {
+        app: router(state.clone()),
+        state,
+        public,
+    };
+
+    send(&svc, "POST", TOKEN, "203.0.113.9:4000", None, Body::empty()).await;
+    let (status, _, _) = send_json(
+        &svc,
+        "/v1/uber/refresh",
+        serde_json::json!({"refresh_token": "good-refresh"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }

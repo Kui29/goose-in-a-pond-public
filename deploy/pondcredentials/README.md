@@ -126,6 +126,31 @@ docker compose up -d --no-build
 Settings are read at startup. After editing `.env`, `docker compose restart` is **not** enough:
 `docker compose up -d --no-build --force-recreate pondcredentials`.
 
+## Optional: the Uber sign-in relay
+
+Ponds connect a member's Uber account through Jarida's Uber app, whose client secret Uber requires
+for every sign-in and token refresh. This service holds it and relays those two requests; it stores
+and logs no member token. Turn it on only once Jarida has an Uber developer app.
+
+Add the client ID (public, not a secret) to `.env`, then, **from your own computer**, copy the secret on:
+
+```bash
+echo 'UBER_CLIENT_ID=<CLIENT_ID>' >> .env                                  # on the droplet
+scp uber_client_secret root@<DROPLET_IP>:/opt/pondcredentials/runtime/secrets/uber_client_secret
+```
+
+Register `http://127.0.0.1:<port>/api/v1/oauth/callback` in the Uber app for each port ponds use
+(4000 to 4009). Then, on the droplet:
+
+```bash
+scp deploy/pondcredentials/compose.uber.yaml root@<DROPLET_IP>:/opt/pondcredentials/   # from your computer
+chown 65532:65532 runtime/secrets/uber_client_secret && chmod 0400 runtime/secrets/uber_client_secret
+docker compose -f compose.yaml -f compose.uber.yaml up -d --no-build --force-recreate pondcredentials
+curl -s https://<YOUR_DOMAIN>/v1/uber/client                             # {"client_id":"..."}
+```
+
+Without the overlay the Uber routes answer 503, and nothing else changes.
+
 ## Check it
 
 ```bash

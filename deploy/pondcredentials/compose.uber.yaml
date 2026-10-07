@@ -1,0 +1,12 @@
+# Optional: relay Uber sign-ins for ponds. Layer it on the base file:
+#   docker compose -f compose.yaml -f compose.uber.yaml up -d --no-build
+# The client secret is a file, like the Apple key, so it never shows in `docker inspect` or `ps`.
+services:
+  pondcredentials:
+    environment:
+      UBER_CLIENT_ID: '${UBER_CLIENT_ID:?Set the Uber app client ID}'
+      UBER_CLIENT_SECRET_FILE: /run/secrets/uber_client_secret
+    secrets: [apple_key, uber_client_secret]
+secrets:
+  uber_client_secret:
+    file: ./runtime/secrets/uber_client_secret

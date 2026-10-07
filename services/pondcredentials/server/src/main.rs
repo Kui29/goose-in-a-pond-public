@@ -88,6 +88,7 @@ async fn main() {
         ttl_days = config.ttl.as_secs() / 86_400,
         rate_per_minute = config.rate_per_minute,
         trust_proxy = config.trust_proxy,
+        relays_uber = config.uber.is_some(),
         "pondcredentials is serving"
     );
 
