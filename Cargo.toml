@@ -276,3 +276,8 @@ whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 # by pointing at a branch.
 llama-cpp-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "ad6e4b85573dec3603e861c4f70fb48c3f9e06fb" }
 llama-cpp-sys-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "ad6e4b85573dec3603e861c4f70fb48c3f9e06fb" }
+
+[patch."https://github.com/lightsparkdev/frost"]
+frost-core = { git = "https://github.com/Exile10/frost", rev = "280c861abcc3f00edfae523b393e5dbb3a1eb249" }
+frost-rerandomized = { git = "https://github.com/Exile10/frost", rev = "280c861abcc3f00edfae523b393e5dbb3a1eb249" }
+frost-secp256k1-tr = { git = "https://github.com/Exile10/frost", rev = "280c861abcc3f00edfae523b393e5dbb3a1eb249" }

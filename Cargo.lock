@@ -447,7 +447,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "alloy-sol-types",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -5690,8 +5690,8 @@ dependencies = [
 
 [[package]]
 name = "frost-core"
-version = "2.1.0"
-source = "git+https://github.com/lightsparkdev/frost?rev=9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180#9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180"
+version = "2.2.0"
+source = "git+https://github.com/Exile10/frost?rev=280c861abcc3f00edfae523b393e5dbb3a1eb249#280c861abcc3f00edfae523b393e5dbb3a1eb249"
 dependencies = [
  "byteorder",
  "const-crc32-nostd",
@@ -5705,15 +5705,14 @@ dependencies = [
  "serde",
  "serdect",
  "thiserror 2.0.18",
- "thiserror-nostd-notrait",
  "visibility",
  "zeroize",
 ]
 
 [[package]]
 name = "frost-rerandomized"
-version = "2.1.0"
-source = "git+https://github.com/lightsparkdev/frost?rev=9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180#9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180"
+version = "2.2.0"
+source = "git+https://github.com/Exile10/frost?rev=280c861abcc3f00edfae523b393e5dbb3a1eb249#280c861abcc3f00edfae523b393e5dbb3a1eb249"
 dependencies = [
  "derive-getters",
  "document-features",
@@ -5724,8 +5723,8 @@ dependencies = [
 
 [[package]]
 name = "frost-secp256k1-tr"
-version = "2.1.0"
-source = "git+https://github.com/lightsparkdev/frost?rev=9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180#9aaf1b6b9fa3c2c3c2c7c70da83061deda1a9180"
+version = "2.2.0"
+source = "git+https://github.com/Exile10/frost?rev=280c861abcc3f00edfae523b393e5dbb3a1eb249#280c861abcc3f00edfae523b393e5dbb3a1eb249"
 dependencies = [
  "document-features",
  "frost-core",
@@ -12205,7 +12204,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -12238,7 +12237,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -12251,7 +12250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -15608,26 +15607,6 @@ name = "thiserror-impl"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "thiserror-nostd-notrait"
-version = "1.0.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8444e638022c44d2a9337031dee8acb732bcc7fbf52ac654edc236b26408b61"
-dependencies = [
- "thiserror-nostd-notrait-impl",
-]
-
-[[package]]
-name = "thiserror-nostd-notrait-impl"
-version = "1.0.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585e5ef40a784ce60b49c67d762110688d211d395d39e096be204535cf64590e"
 dependencies = [
  "proc-macro2",
  "quote",
