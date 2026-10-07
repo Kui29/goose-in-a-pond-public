@@ -35,6 +35,8 @@ const EGRESS_TRACKED: &[&str] = &[
     // Pauses Spotify while the pond speaks, and resumes it (Developer Policy III.7).
     "crates/pond-api/src/spotify_focus.rs",
     "crates/pond-adapters-caldav/src/lib.rs",
+    // Uber's Riders API, on the member's own account; Uber's hosts stay Sensitive.
+    "crates/pond-adapters-uber/src/lib.rs",
     "crates/pond-adapters-weather/src/lib.rs",
     "crates/pond-hf-cache/src/lib.rs",
     "crates/pond-infra/src/fcm_push_relay.rs",

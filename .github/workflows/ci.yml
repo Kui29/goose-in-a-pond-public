@@ -179,6 +179,7 @@ jobs:
             -p pond-adapters-matter \
             -p pond-adapters-vision \
             -p pond-adapters-weather \
+            -p pond-adapters-uber \
             -p pond-adapters-caldav \
             -p pond-adapters-imap \
             -p pond-adapters-mcp-memory \
@@ -203,6 +204,7 @@ jobs:
             -p pond-adapters-matter \
             -p pond-adapters-vision \
             -p pond-adapters-weather \
+            -p pond-adapters-uber \
             -p pond-adapters-caldav \
             -p pond-adapters-imap \
             -p pond-adapters-mcp-memory \
