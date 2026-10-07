@@ -29,3 +29,10 @@ pub trait NotificationSender: Send + Sync {
 
     async fn broadcast(&self, notification: Notification) -> Result<()>;
 }
+
+/// Driven Port: deliver to one household member's own devices, never a broadcast.
+#[async_trait]
+pub trait MemberNotifier: Send + Sync {
+    /// Ids of the devices it was delivered to; empty means it reached nobody.
+    async fn notify_member(&self, profile_id: &str, notification: Notification) -> Vec<String>;
+}

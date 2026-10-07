@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use pond_core::mcp::ports::notification::{Notification, NotificationSender};
+use pond_core::mcp::ports::notification::{MemberNotifier, Notification, NotificationSender};
 use pond_core::mcp::ports::notification_queue::NotificationQueueRepository;
 use pond_core::mcp::ports::notification_relay::NotificationRelay;
 use pond_core::user_data::ports::device_attribution::{
@@ -157,6 +157,17 @@ impl NotificationSender for BroadcastNotificationSender {
         notification.target = BROADCAST_TARGET.to_string();
         let _ = self.tx.send(notification);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl MemberNotifier for BroadcastNotificationSender {
+    async fn notify_member(&self, profile_id: &str, notification: Notification) -> Vec<String> {
+        let report = self.send_to_profile(profile_id, notification).await;
+        for (device, error) in &report.failed {
+            tracing::warn!(device = %device, error = %error, "member notification failed for one device");
+        }
+        report.queued
     }
 }
 
@@ -411,6 +422,26 @@ mod tests {
             published[0].target, "phone-liz",
             "the member's real device is still reached and the sentinel is not"
         );
+    }
+
+    #[tokio::test]
+    async fn the_member_port_reports_the_devices_it_reached() {
+        let (tx, _rx) = broadcast::channel(8);
+        let sender = BroadcastNotificationSender::new(tx, Arc::new(StubQueue::default()), None)
+            .with_device_attribution(ScriptedAttribution::returning(&["phone-liz"]));
+        let port: &dyn MemberNotifier = &sender;
+        assert_eq!(
+            port.notify_member("liz", notif("unused")).await,
+            vec!["phone-liz".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_member_port_reaches_nobody_without_attribution() {
+        let (tx, _rx) = broadcast::channel(8);
+        let sender = BroadcastNotificationSender::new(tx, Arc::new(StubQueue::default()), None);
+        let port: &dyn MemberNotifier = &sender;
+        assert!(port.notify_member("liz", notif("unused")).await.is_empty());
     }
 
     #[tokio::test]

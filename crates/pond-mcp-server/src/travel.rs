@@ -1,12 +1,15 @@
 //! Travel MCP server: directions and ride-app links. The user opens each link and confirms in
 //! the app; nothing here books, pays or tracks.
 
+use pond_core::mcp::ports::notification::{MemberNotifier, Notification};
+use pond_core::security::ports::draft_authority::DraftAuthority;
+use pond_core::user_data::domain::profile::ProfileScope;
 use pond_core::user_data::ports::place_lookup::{PlaceFix, PlaceLookup};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
-        ServerCapabilities, ServerInfo,
+        CallToolResult, Content, ErrorData, Implementation, InitializeResult, Meta,
+        ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
@@ -172,6 +175,9 @@ impl RideApp {
 #[derive(Clone)]
 pub struct TravelMcpServer {
     places: Option<Arc<dyn PlaceLookup>>,
+    /// Both set: links are also pushed to the speaker's own phones. Either unset: reply only.
+    authority: Option<Arc<dyn DraftAuthority>>,
+    notifier: Option<Arc<dyn MemberNotifier>>,
     #[allow(dead_code)] // accessed by rmcp's generated tool_handler code
     tool_router: ToolRouter<Self>,
 }
@@ -186,8 +192,20 @@ impl TravelMcpServer {
     pub fn new(places: Option<Arc<dyn PlaceLookup>>) -> Self {
         Self {
             places,
+            authority: None,
+            notifier: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    pub fn with_phone_delivery(
+        mut self,
+        authority: Option<Arc<dyn DraftAuthority>>,
+        notifier: Option<Arc<dyn MemberNotifier>>,
+    ) -> Self {
+        self.authority = authority;
+        self.notifier = notifier;
+        self
     }
 
     #[tool(description = "\
@@ -195,11 +213,11 @@ Directions to a place as Google Maps and Apple Maps links the user opens on \
 their phone. Omit origin for their current location. Never invent routes or times.")]
     async fn get_directions_link(
         &self,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
         params: Parameters<DirectionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         crate::set_current_tool("get_directions_link");
-        Ok(directions_result(&params.0))
+        Ok(self.directions_result(&ctx.meta, &params.0).await)
     }
 
     #[tool(description = "\
@@ -207,17 +225,17 @@ Link that opens Uber (default) or Bolt with a ride filled in; the user confirms 
 and pays in the app. Omit pickup for their current location. Never claim a ride is booked.")]
     async fn get_ride_link(
         &self,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
         params: Parameters<RideParams>,
     ) -> Result<CallToolResult, ErrorData> {
         crate::set_current_tool("get_ride_link");
-        Ok(self.ride_result(&params.0).await)
+        Ok(self.ride_result(&ctx.meta, &params.0).await)
     }
 }
 
 impl TravelMcpServer {
     /// The body of `get_ride_link`, apart from the rmcp wrapper so tests can call it.
-    pub async fn ride_result(&self, params: &RideParams) -> CallToolResult {
+    pub async fn ride_result(&self, meta: &Meta, params: &RideParams) -> CallToolResult {
         let destination = text_param(&params.destination, &params.extra, DESTINATION_KEYS);
         let pickup = text_param(&params.pickup, &params.extra, PICKUP_KEYS);
         let app = RideApp::parse(
@@ -272,15 +290,27 @@ impl TravelMcpServer {
             },
         };
 
-        let mut lines = vec![format!(
-            "Uber link: {}",
-            uber_url(&pickup_point, dropoff_point.as_ref())
-        )];
+        let url = uber_url(&pickup_point, dropoff_point.as_ref());
+        let mut lines = vec![format!("Uber link: {url}")];
         lines.push(format!("Pickup: {}", describe(&pickup_point)));
         if let Some(point) = &dropoff_point {
             lines.push(format!("Drop-off: {}", describe(point)));
         }
         lines.extend(notes);
+        let title = match &dropoff_point {
+            Some(RidePoint::Place { fix, .. }) => format!("Ride to {}", fix.name),
+            _ => "Uber ride".to_string(),
+        };
+        let link = PhoneLink {
+            kind: "ride",
+            url,
+            title,
+            body: "Opens Uber with the trip filled in. Nothing is booked until you confirm it \
+                   there."
+                .to_string(),
+            label: "Open Uber",
+        };
+        lines.extend(self.deliver(meta, link).await);
         lines.push(
             "Nothing has been booked. The ride is requested only when the user confirms it in \
              Uber, which also shows the fare."
@@ -313,12 +343,13 @@ fn describe(point: &RidePoint) -> String {
     }
 }
 
-/// The body of `get_directions_link`. Pure: the maps apps resolve free text themselves.
-pub fn directions_result(params: &DirectionsParams) -> CallToolResult {
+/// The directions reply and the link to push, or the error result. Pure: the maps apps resolve
+/// free text themselves.
+fn directions(params: &DirectionsParams) -> Result<(String, PhoneLink), CallToolResult> {
     let Some(destination) = text_param(&params.destination, &params.extra, DESTINATION_KEYS) else {
-        return CallToolResult::error(vec![Content::text(
+        return Err(CallToolResult::error(vec![Content::text(
             "No destination was given, so no directions link was made.",
-        )]);
+        )]));
     };
     let origin = text_param(&params.origin, &params.extra, ORIGIN_KEYS);
     let mode = TravelMode::parse(
@@ -331,12 +362,88 @@ pub fn directions_result(params: &DirectionsParams) -> CallToolResult {
         .as_deref()
         .map(|o| format!("from {o}"))
         .unwrap_or_else(|| "from the phone's current location".to_string());
-    CallToolResult::success(vec![Content::text(format!(
-        "Directions to {destination}, {from}, {}.\nGoogle Maps: {}\nApple Maps: {}",
+    let google = google_maps_url(&destination, origin.as_deref(), mode);
+    let text = format!(
+        "Directions to {destination}, {from}, {}.\nGoogle Maps: {google}\nApple Maps: {}",
         mode.google(),
-        google_maps_url(&destination, origin.as_deref(), mode),
         apple_maps_url(&destination, origin.as_deref(), mode),
-    ))])
+    );
+    // Google's link opens on both platforms: Google Maps where installed, else the browser.
+    let link = PhoneLink {
+        kind: "directions",
+        url: google,
+        title: format!("Directions to {destination}"),
+        body: format!("Opens the map {from}."),
+        label: "Open directions",
+    };
+    Ok((text, link))
+}
+
+/// A link to put on the speaker's phone; `kind` and `label` follow GOTG's `open_url` contract.
+struct PhoneLink {
+    kind: &'static str,
+    url: String,
+    title: String,
+    body: String,
+    label: &'static str,
+}
+
+impl TravelMcpServer {
+    /// The body of `get_directions_link`, apart from the rmcp wrapper so tests can call it.
+    pub async fn directions_result(
+        &self,
+        meta: &Meta,
+        params: &DirectionsParams,
+    ) -> CallToolResult {
+        match directions(params) {
+            Err(result) => result,
+            Ok((text, link)) => {
+                let mut lines = vec![text];
+                lines.extend(self.deliver(meta, link).await);
+                CallToolResult::success(vec![Content::text(lines.join("\n"))])
+            }
+        }
+    }
+
+    /// Push `link` to the speaker's own phones. `None` when delivery isn't wired; otherwise the
+    /// line saying where it went. Only a named member is pushed to: a household or guest speaker
+    /// has no phone that is theirs, and a broadcast would put one person's trip on every phone.
+    async fn deliver(&self, meta: &Meta, link: PhoneLink) -> Option<String> {
+        let (Some(authority), Some(notifier)) = (&self.authority, &self.notifier) else {
+            return None;
+        };
+        let Some(session) = crate::session_meta::session_from_meta(meta) else {
+            return Some("Not sent to a phone: this call carries no session.".to_string());
+        };
+        let profile_id =
+            match authority.actor_for_engine_session(&session).await {
+                Some((ProfileScope::Owner(id), _)) => id,
+                _ => return Some(
+                    "Not sent to a phone: the speaker is not identified as one household member."
+                        .to_string(),
+                ),
+            };
+        let notification = Notification {
+            id: uuid::Uuid::new_v4().to_string(),
+            target: profile_id.clone(),
+            category: "info".to_string(),
+            title: link.title,
+            body: link.body,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            data: Some(serde_json::json!({
+                "action": "open_url",
+                "kind": link.kind,
+                "url": link.url,
+                "label": link.label,
+            })),
+        };
+        let reached = notifier.notify_member(&profile_id, notification).await;
+        Some(match reached.len() {
+            0 => "Not sent to a phone: the speaker has no paired phone of their own.".to_string(),
+            1 => "Also sent to the speaker's phone.".to_string(),
+            n => format!("Also sent to the speaker's {n} paired devices."),
+        })
+    }
 }
 
 // ── Param resolution ──────────────────────────────────────────────────────────
@@ -411,7 +518,8 @@ pub fn spawn_travel_server(reader: DuplexStream, writer: DuplexStream) {
         );
         return;
     };
-    let server = TravelMcpServer::new(deps.places.clone());
+    let server = TravelMcpServer::new(deps.places.clone())
+        .with_phone_delivery(crate::speaker_authority(), crate::member_notifier());
     crate::serve_builtin(TRAVEL_EXTENSION, server, reader, writer);
 }
 
@@ -541,7 +649,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolved_ride_names_the_match_and_books_nothing() {
-        let out = text(&server().ride_result(&ride(Some("JKIA"), None, None)).await);
+        let out = text(
+            &server()
+                .ride_result(&Meta::new(), &ride(Some("JKIA"), None, None))
+                .await,
+        );
         assert!(out.contains("https://m.uber.com/ul/?action=setPickup&pickup=my_location"));
         assert!(out.contains("dropoff[latitude]=-1.319167"), "{out}");
         assert!(
@@ -555,7 +667,7 @@ mod tests {
     async fn a_named_pickup_is_resolved_too() {
         let out = text(
             &server()
-                .ride_result(&ride(Some("JKIA"), Some("Westlands"), None))
+                .ride_result(&Meta::new(), &ride(Some("JKIA"), Some("Westlands"), None))
                 .await,
         );
         assert!(out.contains("pickup[latitude]=-1.267600"), "{out}");
@@ -565,7 +677,7 @@ mod tests {
     #[tokio::test]
     async fn an_unmatched_destination_leaves_the_dropoff_empty_and_says_so() {
         let result = server()
-            .ride_result(&ride(Some("my aunt's place"), None, None))
+            .ride_result(&Meta::new(), &ride(Some("my aunt's place"), None, None))
             .await;
         let out = text(&result);
         assert_ne!(result.is_error, Some(true));
@@ -577,7 +689,7 @@ mod tests {
     async fn without_a_place_lookup_the_link_still_opens_uber() {
         let out = text(
             &TravelMcpServer::new(None)
-                .ride_result(&ride(Some("JKIA"), None, None))
+                .ride_result(&Meta::new(), &ride(Some("JKIA"), None, None))
                 .await,
         );
         assert!(out.contains("pickup=my_location"), "{out}");
@@ -587,7 +699,7 @@ mod tests {
     #[tokio::test]
     async fn bolt_is_an_error_that_makes_no_link() {
         let result = server()
-            .ride_result(&ride(Some("JKIA"), None, Some("bolt")))
+            .ride_result(&Meta::new(), &ride(Some("JKIA"), None, Some("bolt")))
             .await;
         assert_eq!(result.is_error, Some(true));
         let out = text(&result);
@@ -595,22 +707,184 @@ mod tests {
         assert!(out.contains("Nothing has been booked"), "{out}");
     }
 
-    #[test]
-    fn directions_read_the_destination_from_extras() {
+    #[tokio::test]
+    async fn directions_read_the_destination_from_extras() {
         let mut extra = HashMap::new();
         extra.insert("to".to_string(), serde_json::json!("Kisumu"));
-        let out = text(&directions_result(&DirectionsParams {
-            extra,
-            ..Default::default()
-        }));
+        let out = text(
+            &server()
+                .directions_result(
+                    &Meta::new(),
+                    &DirectionsParams {
+                        extra,
+                        ..Default::default()
+                    },
+                )
+                .await,
+        );
         assert!(out.contains("destination=Kisumu"), "{out}");
         assert!(out.contains("daddr=Kisumu"), "{out}");
     }
 
-    #[test]
-    fn directions_without_a_destination_are_an_error() {
-        let result = directions_result(&DirectionsParams::default());
+    #[tokio::test]
+    async fn directions_without_a_destination_are_an_error() {
+        let result = server()
+            .directions_result(&Meta::new(), &DirectionsParams::default())
+            .await;
         assert_eq!(result.is_error, Some(true));
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    //! Pushing the link to the speaker's own phone: a named member only, never a broadcast.
+
+    use super::*;
+    use async_trait::async_trait;
+    use pond_core::mcp::mocks::mock_member_notifier::MockMemberNotifier;
+    use pond_core::security::ports::policy::{PolicyDecision, PolicyMode};
+    use pond_core::user_data::domain::session::IdentificationSource;
+
+    struct FixedSpeaker(Option<ProfileScope>);
+
+    #[async_trait]
+    impl DraftAuthority for FixedSpeaker {
+        async fn policy_mode(&self) -> PolicyMode {
+            PolicyMode::Audit
+        }
+        async fn actor_for_engine_session(
+            &self,
+            _engine_session_id: &str,
+        ) -> Option<(ProfileScope, IdentificationSource)> {
+            self.0
+                .clone()
+                .map(|scope| (scope, IdentificationSource::Explicit))
+        }
+        async fn audit(&self, _s: &str, _a: &str, _d: &PolicyDecision) {}
+    }
+
+    fn meta() -> Meta {
+        let mut m = Meta::new();
+        m.0.insert(
+            crate::session_meta::SESSION_ID_META_KEY.to_string(),
+            serde_json::json!("engine-1"),
+        );
+        m
+    }
+
+    fn server(speaker: Option<ProfileScope>, notifier: Arc<MockMemberNotifier>) -> TravelMcpServer {
+        TravelMcpServer::new(None)
+            .with_phone_delivery(Some(Arc::new(FixedSpeaker(speaker))), Some(notifier))
+    }
+
+    fn directions_to(place: &str) -> DirectionsParams {
+        DirectionsParams {
+            destination: Some(place.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_named_member_gets_the_link_on_their_phone() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        let out = text(
+            &server(Some(ProfileScope::Owner("liz".into())), notifier.clone())
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(out.contains("Also sent to the speaker's phone."), "{out}");
+
+        let sent = notifier.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "liz");
+        let data = sent[0].1.data.as_ref().expect("the link rides in data");
+        assert_eq!(data["action"], "open_url");
+        assert_eq!(data["kind"], "directions");
+        assert!(data["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://www.google.com/maps/dir/"));
+    }
+
+    #[tokio::test]
+    async fn a_ride_is_pushed_with_the_uber_link() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        server(Some(ProfileScope::Owner("liz".into())), notifier.clone())
+            .ride_result(
+                &meta(),
+                &RideParams {
+                    destination: Some("anywhere".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let data = notifier.sent()[0].1.data.clone().unwrap();
+        assert_eq!(data["kind"], "ride");
+        assert_eq!(data["label"], "Open Uber");
+        assert!(data["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://m.uber.com/ul/"));
+    }
+
+    #[tokio::test]
+    async fn household_and_guest_speakers_are_never_pushed_to() {
+        for scope in [
+            Some(ProfileScope::Household),
+            Some(ProfileScope::Guest),
+            None,
+        ] {
+            let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+            let out = text(
+                &server(scope.clone(), notifier.clone())
+                    .directions_result(&meta(), &directions_to("Kisumu"))
+                    .await,
+            );
+            assert!(notifier.sent().is_empty(), "{scope:?} was pushed to");
+            assert!(out.contains("Not sent to a phone"), "{out}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_member_without_a_phone_is_told_so() {
+        let notifier = Arc::new(MockMemberNotifier::new());
+        let out = text(
+            &server(Some(ProfileScope::Owner("jerry".into())), notifier)
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(out.contains("no paired phone of their own"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_call_without_a_session_is_not_pushed() {
+        let notifier = Arc::new(MockMemberNotifier::new().with_devices("liz", &["liz-phone"]));
+        let out = text(
+            &server(Some(ProfileScope::Owner("liz".into())), notifier.clone())
+                .directions_result(&Meta::new(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(notifier.sent().is_empty());
+        assert!(out.contains("carries no session"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn without_delivery_wired_the_reply_says_nothing_about_phones() {
+        let out = text(
+            &TravelMcpServer::new(None)
+                .directions_result(&meta(), &directions_to("Kisumu"))
+                .await,
+        );
+        assert!(!out.contains("sent to"), "{out}");
     }
 }
 

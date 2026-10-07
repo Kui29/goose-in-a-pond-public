@@ -3513,6 +3513,8 @@ async fn run_server(
         targeted_notification_sender.clone();
     // Lets the `send_notification` MCP tool reach connected phones too.
     pond_mcp_server::init_notification_sender(notification_sender.clone());
+    // Profile-addressed, so a tool's link reaches the speaker's phones and no one else's.
+    pond_mcp_server::init_member_notifier(targeted_notification_sender.clone());
 
     // Converge Matter only now: a first enable installs a controller (minutes), and the notice
     // explaining the wait needs the sender. `apply` returns immediately.

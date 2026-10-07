@@ -94,6 +94,21 @@ pub fn speaker_authority(
     SPEAKER_AUTHORITY.get().cloned()
 }
 
+// -- Member delivery: puts a tool's link on one member's own phones; unset → reply only --
+static MEMBER_NOTIFIER: OnceLock<Arc<dyn pond_core::mcp::ports::notification::MemberNotifier>> =
+    OnceLock::new();
+
+/// Install member-addressed delivery. Call once at startup.
+pub fn init_member_notifier(
+    notifier: Arc<dyn pond_core::mcp::ports::notification::MemberNotifier>,
+) {
+    let _ = MEMBER_NOTIFIER.set(notifier);
+}
+
+pub fn member_notifier() -> Option<Arc<dyn pond_core::mcp::ports::notification::MemberNotifier>> {
+    MEMBER_NOTIFIER.get().cloned()
+}
+
 /// Generate tool params via the ToolCaller; when one is configured they replace the LLM's.
 pub async fn generate_params(
     tool_name: &str,
