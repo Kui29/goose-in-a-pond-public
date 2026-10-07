@@ -35,16 +35,6 @@ ignoreUntil = 2027-03-31
 reason = "derivative is unmaintained. Transitive, no fixed version exists."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2024-0384"
-ignoreUntil = 2027-03-31
-reason = "instant is unmaintained. Transitive, no fixed version exists."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0243"
-ignoreUntil = 2027-03-31
-reason = "nostr-relay-pool is unmaintained. Transitive, no fixed version exists."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
 ignoreUntil = 2027-03-31
 reason = "paste is unmaintained. Transitive, no fixed version exists."

@@ -8,14 +8,6 @@ ignore = [
     # (RUSTSEC-2026-0187 — lopdf stack overflow — was removed here after
     # bumping lopdf to 0.42 on the goose patch branch, jarida-io/Goose PR #4.)
 
-    # quick-xml 0.36/0.37: quadratic duplicate-attribute check (7.5) …
-    "RUSTSEC-2026-0194",
-    # … and unbounded namespace-declaration allocation DoS (7.5). Owned by docx-rs under
-    # goose-mcp (goose submodule). BLOCKED UPSTREAM: docx-rs 0.4.20 (latest, checked 2026-07-16)
-    # still requires quick-xml 0.36; the fix needs docx-rs to ship quick-xml >=0.41. GIAP does
-    # not parse untrusted XML/DOCX through these paths.
-    "RUSTSEC-2026-0195",
-
     # rsa: Marvin timing side-channel (5.9 medium). NO fixed release exists. Reaches us only
     # transitively and as a pond-infra DEV-dependency (throwaway RSA key for the FCM relay test).
     # Not linked into pond-server (`cargo tree -p pond-server -i rsa --edges normal` is empty);

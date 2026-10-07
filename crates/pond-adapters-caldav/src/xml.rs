@@ -28,12 +28,14 @@ fn local(name: &[u8]) -> String {
 /// Parse a `multistatus` into its responses; unknown elements are skipped, not refused.
 pub fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<DavResponse>> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // Entity references are separate events in quick-xml 0.41. Trim only after
+    // joining a property's complete text, so spaces around entities survive.
 
     let mut responses = Vec::new();
     let mut current: Option<DavResponse> = None;
     // Local-name element stack, so text is attributed to its enclosing property.
     let mut stack: Vec<String> = Vec::new();
+    let mut text_stack: Vec<String> = Vec::new();
     let mut seen_response_href = false;
 
     loop {
@@ -48,6 +50,7 @@ pub fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<DavResponse>> {
                     // Its children are self-closing; the `Empty` arm collects them.
                 }
                 stack.push(name);
+                text_stack.push(String::new());
             }
             Ok(Event::Empty(e)) => {
                 let name = local(e.name().as_ref());
@@ -58,37 +61,55 @@ pub fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<DavResponse>> {
                 }
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape().unwrap_or_default().trim().to_string();
-                if text.is_empty() {
-                    continue;
+                if let Some(text) = text_stack.last_mut() {
+                    text.push_str(&e.decode()?);
                 }
-                let Some(cur) = current.as_mut() else {
-                    continue;
-                };
-                match stack.last().map(String::as_str) {
-                    Some("href") => {
-                        // First href is the response's; one nested in a property is the next hop.
-                        if !seen_response_href
-                            && !stack.iter().rev().skip(1).any(|s| {
-                                s == "current-user-principal"
-                                    || s == "calendar-home-set"
-                                    || s == "owner"
-                            })
-                        {
-                            cur.href = text;
-                            seen_response_href = true;
-                        } else {
-                            cur.nested_href.get_or_insert(text);
-                        }
+            }
+            Ok(Event::CData(e)) => {
+                if let Some(text) = text_stack.last_mut() {
+                    text.push_str(&e.decode()?);
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(text) = text_stack.last_mut() {
+                    if let Some(ch) = e.resolve_char_ref()? {
+                        text.push(ch);
+                    } else {
+                        let name = e.decode()?;
+                        let value = quick_xml::escape::resolve_predefined_entity(&name)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("unknown XML entity in CalDAV response")
+                            })?;
+                        text.push_str(value);
                     }
-                    Some("displayname") => cur.display_name = Some(text),
-                    Some("calendar-data") => cur.calendar_data = Some(text),
-                    Some("getctag") | Some("sync-token") => cur.ctag = Some(text),
-                    _ => {}
                 }
             }
             Ok(Event::End(e)) => {
                 let name = local(e.name().as_ref());
+                let text = text_stack.pop().unwrap_or_default().trim().to_string();
+                if let Some(cur) = current.as_mut().filter(|_| !text.is_empty()) {
+                    match stack.last().map(String::as_str) {
+                        Some("href") => {
+                            // First href is the response's; one nested in a property is the next hop.
+                            if !seen_response_href
+                                && !stack.iter().rev().skip(1).any(|s| {
+                                    s == "current-user-principal"
+                                        || s == "calendar-home-set"
+                                        || s == "owner"
+                                })
+                            {
+                                cur.href = text;
+                                seen_response_href = true;
+                            } else {
+                                cur.nested_href.get_or_insert(text);
+                            }
+                        }
+                        Some("displayname") => cur.display_name = Some(text),
+                        Some("calendar-data") => cur.calendar_data = Some(text),
+                        Some("getctag") | Some("sync-token") => cur.ctag = Some(text),
+                        _ => {}
+                    }
+                }
                 stack.pop();
                 if name == "response" {
                     if let Some(cur) = current.take() {
@@ -182,6 +203,42 @@ END:VCALENDAR</C:calendar-data></prop></propstat>
   </response></multistatus>"#;
         let r = parse_multistatus(xml).unwrap();
         assert_eq!(r[0].display_name.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn entity_fragments_preserve_property_text_and_href_routing() {
+        let xml = r#"<multistatus><response><href>/c/?a=1&amp;b=2</href>
+          <propstat><prop><displayname> Home &amp; Work &#xE9; </displayname>
+          <current-user-principal><href>/p/a&amp;b/</href></current-user-principal>
+          <sync-token>a&amp;b</sync-token></prop></propstat>
+          </response></multistatus>"#;
+        let responses = parse_multistatus(xml).unwrap();
+        assert_eq!(responses[0].href, "/c/?a=1&b=2");
+        assert_eq!(
+            responses[0].display_name.as_deref(),
+            Some("Home & Work \u{E9}")
+        );
+        assert_eq!(responses[0].nested_href.as_deref(), Some("/p/a&b/"));
+        assert_eq!(responses[0].ctag.as_deref(), Some("a&b"));
+    }
+
+    #[test]
+    fn calendar_data_keeps_entities_cdata_and_internal_whitespace() {
+        let xml = "<multistatus><response><calendar-data>BEGIN:VCALENDAR\nSUMMARY:Home &amp; Work<![CDATA[ <review>]]>&#10;END:VCALENDAR</calendar-data></response></multistatus>";
+        let responses = parse_multistatus(xml).unwrap();
+        assert_eq!(
+            responses[0].calendar_data.as_deref(),
+            Some("BEGIN:VCALENDAR\nSUMMARY:Home & Work <review>\nEND:VCALENDAR")
+        );
+    }
+
+    #[test]
+    fn invalid_entities_are_errors_instead_of_silent_data_loss() {
+        for reference in ["&unknown;", "&#x0;", "&#x110000;"] {
+            let xml =
+                format!("<multistatus><response><href>{reference}</href></response></multistatus>");
+            assert!(parse_multistatus(&xml).is_err());
+        }
     }
 
     #[test]

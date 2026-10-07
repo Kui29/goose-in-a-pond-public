@@ -118,25 +118,9 @@ jobs:
   osv:
     name: All lockfiles — OSV (GitHub Advisory ranges)
     runs-on: ubuntu-latest
-    # Still advisory, and now for a shorter and more specific reason.
-    #
-    # osv-scanner.toml now carries a reviewed entry for every advisory with NO upstream fix --
-    # the ten unmaintained-crate notices, rsa RUSTSEC-2023-0071 and ttf-parser RUSTSEC-2026-0192.
-    # What keeps this job red is the other half: advisories that DO have a fixed version and have
-    # simply not been taken. As of 2026-09-29 that is hickory-proto (8.7), yamux (8.7), quick-xml
-    # (7.5, two entries at two versions), rmcp (8.2/7.5/6.8), opentelemetry_sdk, openssl,
-    # frost-core, serde_with, scc, lru, memmap2, tar, anyhow, event-listener, and esbuild in
-    # pond-desktop.
-    #
-    # Those are upgrades, not exceptions, so they are deliberately absent from osv-scanner.toml:
-    # ignoring an advisory you could patch converts a real finding into a silent one. Several are
-    # not one-line bumps -- rmcp is pinned to =1.5.0 in [workspace.dependencies] so the Goose
-    # submodule and pond-mcp-server resolve to one rmcp, and quick-xml and scc need semver-major
-    # bumps inside Goose itself.
-    #
-    # Drop `continue-on-error` when that list is empty, not before: turning it into a gate today
-    # would block every merge on work that has to happen in the submodule first.
-    continue-on-error: true
+    # Fixed-version advisories are resolved. Unfixable upstream advisories retain
+    # their existing reviewed, expiring entries in osv-scanner.toml.
+    # New or newly fixable findings must fail this job rather than pass silently.
     steps:
       - uses: actions/checkout@v7
         with:
