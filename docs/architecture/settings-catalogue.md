@@ -262,6 +262,7 @@ client reads it, the server never does · `NONE` = nothing reads it anywhere.
 | `ext_vision_enabled` | `true` | LIVE | S |
 | `ext_sensor_enabled` | `true` | LIVE | S |
 | `ext_orchestrator_enabled` | **`false`** | LIVE | S |
+| `ext_travel_enabled` | **`false`** | LIVE | S |
 | `ext_context_enabled` | **`false`** | LIVE | **API** |
 | `tool_selection_mode` | `"all"` | LIVE | S, H:Extensions |
 | `tool_model` | `null` | LIVE | S |

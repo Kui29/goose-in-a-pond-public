@@ -23,6 +23,9 @@ pub const TOOLKIT_EXTENSION: &str = "giap-toolkit";
 /// treated as a user-added MCP server, which selection never narrows.
 pub const ORCHESTRATOR_EXTENSION: &str = "giap-orchestrator";
 
+/// Extension carrying the directions and ride-link tools; a const for the same reason.
+pub const TRAVEL_EXTENSION: &str = "giap-travel";
+
 /// Separator in a prefixed tool name (`giap-weather__get_forecast`); Goose's convention.
 pub const TOOL_NAME_SEPARATOR: &str = "__";
 
@@ -114,6 +117,12 @@ pub const TOOL_GROUPS: &[ToolGroup] = &[
         description: "The speaker's own personal context, from sources they connected: what a \
                       camera or sensor of theirs has recorded, searched by meaning or listed by \
                       recency. Read-only, and scoped to whoever is speaking.",
+        core: false,
+    },
+    ToolGroup {
+        extension: TRAVEL_EXTENSION,
+        description: "Getting somewhere: directions and a map link to a place, or a taxi or ride \
+                      with Uber or Bolt to the airport, a mall, an office or home.",
         core: false,
     },
     ToolGroup {

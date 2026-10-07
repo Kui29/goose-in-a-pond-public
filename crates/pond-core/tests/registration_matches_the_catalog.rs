@@ -3,7 +3,9 @@
 //! Parses source: registering needs the goose submodule, and `REGISTERED_EXTENSIONS` is a
 //! `OnceLock`. In pond-core because CI only runs pond-core's tests.
 
-use pond_core::mcp::domain::tool_group::{ORCHESTRATOR_EXTENSION, TOOLKIT_EXTENSION, TOOL_GROUPS};
+use pond_core::mcp::domain::tool_group::{
+    ORCHESTRATOR_EXTENSION, TOOLKIT_EXTENSION, TOOL_GROUPS, TRAVEL_EXTENSION,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -73,6 +75,7 @@ fn resolve_argument(arg: &str) -> String {
     match last {
         "TOOLKIT_EXTENSION" => TOOLKIT_EXTENSION.to_string(),
         "ORCHESTRATOR_EXTENSION" => ORCHESTRATOR_EXTENSION.to_string(),
+        "TRAVEL_EXTENSION" => TRAVEL_EXTENSION.to_string(),
         _ => panic!(
             "giap_registration.rs registers an extension under `{arg}`, which this test cannot \
              resolve to a name. Do NOT delete the call from the parser's view and do not make \
@@ -132,7 +135,7 @@ fn every_registered_extension_is_in_the_catalog_and_the_reverse() {
 /// Pinned here because `AGENTS.md` is untracked; update its sentence in the same change.
 #[test]
 fn the_extension_count_is_pinned() {
-    const CLAIMED: usize = 11;
+    const CLAIMED: usize = 12;
 
     // The registration count, which the test above ties to the catalog's.
     let registered = registered_extensions_from_source().len();

@@ -121,6 +121,18 @@ pub fn register_giap_extensions(
         registered.push("giap-sensors".into());
     }
 
+    // Destination names go to the geocoder, the one outbound call; the links are built locally.
+    if settings.ext_travel_enabled {
+        pond_mcp_server::init_travel_deps(Some(Arc::new(pond_adapters_weather::Geocoder::new(
+            pond_mcp_server::build_http_client(),
+        ))));
+        register_builtin_extension(
+            pond_mcp_server::TRAVEL_EXTENSION,
+            pond_mcp_server::spawn_travel_server,
+        );
+        registered.push(pond_mcp_server::TRAVEL_EXTENSION.into());
+    }
+
     // Personal context: read-only, scoped to the speaker via the session id in `_meta`. Never add
     // an `ingest_context` tool: injected text could be planted and later quoted as fact.
     if settings.ext_context_enabled {

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::{
     DeviceControlMcpServer, DeviceMcpServer, KnowledgeMcpServer, MemoryMcpServer,
-    ScheduleMcpServer, SystemMcpServer, WeatherMcpServer,
+    ScheduleMcpServer, SystemMcpServer, TravelMcpServer, WeatherMcpServer,
 };
 
 // ── Tool name constants ──────────────────────────────────────────────────────
@@ -30,6 +30,7 @@ const PREFIX_SCHEDULE: &str = "giap-schedule__";
 const PREFIX_SYSTEM: &str = "giap-system__";
 const PREFIX_DEVICE: &str = "giap-device__";
 const PREFIX_DEVICE_CONTROL: &str = "giap-device-control__";
+const PREFIX_TRAVEL: &str = "giap-travel__";
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
@@ -124,6 +125,9 @@ impl McpToolDispatcher {
         let device_server =
             DeviceMcpServer::new(device_registry.clone(), settings_repo.clone(), skill_repo);
         let device_control_server = DeviceControlMcpServer::new(device_control, device_registry);
+        let travel_server = TravelMcpServer::new(Some(Arc::new(
+            pond_adapters_weather::Geocoder::new(http_client.clone()),
+        )));
         // rmcp mints a `Peer` only from a running service; the dep-free system server backs it.
         let (_client_stream, server_stream) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly(SystemMcpServer::new(), server_stream, None);
@@ -154,6 +158,10 @@ impl McpToolDispatcher {
             RegisteredServer {
                 prefix: PREFIX_DEVICE_CONTROL,
                 server: Box::new(device_control_server),
+            },
+            RegisteredServer {
+                prefix: PREFIX_TRAVEL,
+                server: Box::new(travel_server),
             },
         ];
         if let Some(sched) = schedule_server {

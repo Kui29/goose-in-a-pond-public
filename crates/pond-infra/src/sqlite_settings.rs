@@ -606,6 +606,14 @@ impl SettingsRepository for SqliteSettingsRepository {
             }
         );
         upsert!(
+            "ext_travel_enabled",
+            if settings.ext_travel_enabled {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        upsert!(
             "voice_thinking_tone_enabled",
             if settings.voice_thinking_tone_enabled {
                 "true"
@@ -1101,6 +1109,7 @@ fn apply_key(s: &mut Settings, key: &str, value: &str) {
         "ext_sensor_enabled" => s.ext_sensor_enabled = value == "true",
         // A corrupt row is not "true", so delegation stays off.
         "ext_orchestrator_enabled" => s.ext_orchestrator_enabled = value == "true",
+        "ext_travel_enabled" => s.ext_travel_enabled = value == "true",
         // Defaults ON, but a corrupt row still reads false: silence is the safe failure for audio.
         "voice_thinking_tone_enabled" => s.voice_thinking_tone_enabled = value == "true",
         // A corrupt row is not "true", so the pond stays quiet.

@@ -49,6 +49,10 @@ pub fn all_tools() -> Vec<(&'static str, Tool)> {
         "giap-orchestrator",
         crate::orchestrator::OrchestratorMcpServer::tool_defs(),
     );
+    push(
+        crate::travel::TRAVEL_EXTENSION,
+        crate::travel::TravelMcpServer::tool_defs(),
+    );
 
     out
 }
@@ -89,7 +93,7 @@ pub fn total_bytes(entries: &[PrefixEntry]) -> usize {
 mod tests {
     use super::*;
 
-    /// Groups registered by default; `giap-context` and `giap-orchestrator` are off.
+    /// Groups registered by default; `giap-context`, `giap-orchestrator` and `giap-travel` are off.
     const DEFAULT_GROUPS: &[&str] = &[
         "giap-memory",
         "giap-weather",

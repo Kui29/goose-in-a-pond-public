@@ -200,6 +200,8 @@ export interface Settings {
   ext_sensor_enabled?: boolean;
   /** Delegation to saved agent roles. Ships OFF: read as `=== true` so absent means off. */
   ext_orchestrator_enabled?: boolean;
+  /** Directions and ride-app links (adds two tool schemas). */
+  ext_travel_enabled?: boolean;
 
   // Speaking and acting unprompted. Both ship OFF: read as `=== true` so absent means off.
   /** Unasked review and proposals; needs `ext_orchestrator_enabled` (runs as a delegated child). */

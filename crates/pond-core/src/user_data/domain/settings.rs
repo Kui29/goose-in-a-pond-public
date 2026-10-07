@@ -679,6 +679,11 @@ pub struct Settings {
     #[serde(default = "Settings::default_ext_orchestrator_enabled")]
     pub ext_orchestrator_enabled: bool,
 
+    /// Offers directions and ride-app links. Off by default: two more schemas in every prompt,
+    /// and a destination lookup sends the place name to the geocoder.
+    #[serde(default = "Settings::default_ext_travel_enabled")]
+    pub ext_travel_enabled: bool,
+
     /// May the pond speak without having been spoken to?
     #[serde(default = "Settings::default_unprompted_speech_enabled")]
     pub unprompted_speech_enabled: bool,
@@ -847,6 +852,7 @@ impl Default for Settings {
             ext_sensor_enabled: true,
             // Must stay `false`, not `Self::default_ext_enabled()`.
             ext_orchestrator_enabled: false,
+            ext_travel_enabled: false,
             unprompted_speech_enabled: false,
             quiet_hours_start: Self::default_quiet_hours_start(),
             quiet_hours_end: Self::default_quiet_hours_end(),
@@ -1224,6 +1230,10 @@ impl Settings {
 
     /// Deliberately not [`Self::default_ext_enabled`]; named so a test can assert it is `false`.
     fn default_ext_orchestrator_enabled() -> bool {
+        false
+    }
+
+    fn default_ext_travel_enabled() -> bool {
         false
     }
 
@@ -1935,6 +1945,7 @@ mod tests {
             "ext_schedule_enabled",
             "ext_sensor_enabled",
             "ext_system_enabled",
+            "ext_travel_enabled",
             "ext_weather_enabled",
             "home_name",
             "llm_max_tokens",
@@ -2157,6 +2168,7 @@ mod tests {
     /// Only these `ext_*` toggles may ship off, each for the reason given here:
     /// - `ext_orchestrator_enabled`: consent to autonomous `GooseMode::Auto` agents.
     /// - `ext_context_enabled`: consent, and two tool schemas in every turn's prompt.
+    /// - `ext_travel_enabled`: two tool schemas per prompt, and destinations leave the pond.
     #[test]
     fn only_the_deliberate_extension_toggles_ship_switched_off() {
         let value = serde_json::to_value(Settings::default()).expect("serialize Settings");
@@ -2171,7 +2183,11 @@ mod tests {
         off.sort_unstable();
         assert_eq!(
             off,
-            vec!["ext_context_enabled", "ext_orchestrator_enabled"],
+            vec![
+                "ext_context_enabled",
+                "ext_orchestrator_enabled",
+                "ext_travel_enabled"
+            ],
             "the set of extension toggles that ship OFF changed. Adding one is a deliberate \
              decision and belongs in this test's doc comment with its reason; losing \
              `ext_orchestrator_enabled` means delegation is now on by default on every install, \
