@@ -214,7 +214,7 @@ bip39 = { version = "2", features = ["rand"] }
 # pond-adapters-mesh-libp2p only. No `quic` feature — stays on the TCP
 # transport so this doesn't pull a second quinn/rustls major version
 # alongside the ones already transitive via reqwest/sqlx.
-libp2p = { version = "0.56", features = [
+libp2p = { version = "0.57", features = [
     "tokio", "tcp", "noise", "yamux", "ed25519",
     "kad", "gossipsub", "relay", "dcutr", "identify", "ping",
     "request-response", "cbor", "macros", "websocket", "dns",

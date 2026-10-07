@@ -18,34 +18,9 @@ export interface AdapterContext {
   fetchUserToken(service: string, refresh: boolean): Promise<string>;
 }
 
-// A Map, not an object: `service` comes from the page's URL, and an object would answer
-// "constructor" or "toString" with Object's own functions.
-const ADAPTERS = new Map<string, (ctx: AdapterContext) => PlayerAdapter>([
-  [
-    "apple",
-    (ctx) =>
-      new AppleMusicKitAdapter({
-        loadMusicKit: loadMusicKitFromApple,
-        fetchDeveloperToken: ctx.fetchDeveloperToken,
-        networkAllows: ctx.networkAllows,
-      }),
-  ],
-  [
-    "spotify",
-    (ctx) =>
-      new SpotifyWebPlaybackAdapter(
-        {
-          loadSdk: loadSpotifySdk,
-          fetchUserToken: (refresh) => ctx.fetchUserToken("spotify", refresh),
-          networkAllows: ctx.networkAllows,
-        },
-        { logoUrl: SPOTIFY_LOGO_URL },
-      ),
-  ],
-]);
-
+/** Services supported by the player, in display order. */
 export function knownServices(): string[] {
-  return [...ADAPTERS.keys()];
+  return ["apple", "spotify"];
 }
 
 /** The adapter for `service`, or null when the player has none. */
@@ -53,5 +28,24 @@ export function createAdapter(
   service: string,
   ctx: AdapterContext,
 ): PlayerAdapter | null {
-  return ADAPTERS.get(service)?.(ctx) ?? null;
+  // The URL supplies service. Explicit branches keep it out of method selection entirely.
+  switch (service) {
+    case "apple":
+      return new AppleMusicKitAdapter({
+        loadMusicKit: loadMusicKitFromApple,
+        fetchDeveloperToken: ctx.fetchDeveloperToken,
+        networkAllows: ctx.networkAllows,
+      });
+    case "spotify":
+      return new SpotifyWebPlaybackAdapter(
+        {
+          loadSdk: loadSpotifySdk,
+          fetchUserToken: (refresh) => ctx.fetchUserToken("spotify", refresh),
+          networkAllows: ctx.networkAllows,
+        },
+        { logoUrl: SPOTIFY_LOGO_URL },
+      );
+    default:
+      return null;
+  }
 }

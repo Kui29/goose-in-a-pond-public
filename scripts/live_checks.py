@@ -22,6 +22,9 @@ import sys
 # destination of the refused request.
 OPEN_METEO_REFUSAL = re.compile(r"outbound request to (?:[a-z-]+\.)?open-meteo\.com(?![\w.-])")
 
+# Match the destination in the refusal reason, not a hostname embedded in another field.
+APPLE_PLAYER_REFUSAL = re.compile(r"refused an outbound request to js-cdn\.music\.apple\.com:")
+
 DATA_DIR = os.environ.get("POND_DATA_DIR", "/tmp/pond-live")
 DB = os.path.join(DATA_DIR, "pond_system.db")
 PORT_FILE = os.path.join(DATA_DIR, ".runtime_api_port")
@@ -662,7 +665,9 @@ def section_music_player():
             200,
             body,
             ("refused", lambda b: isinstance(b, dict) and b.get("allowed") is False),
-            ("names the host", lambda b: "js-cdn.music.apple.com" in json.dumps(b)),
+            ("names the host", lambda b: isinstance(b, dict)
+             and isinstance(b.get("reason"), str)
+             and APPLE_PLAYER_REFUSAL.search(b["reason"]) is not None),
         )
         code, body = call(
             "POST", "/api/v1/player/egress-policy",
