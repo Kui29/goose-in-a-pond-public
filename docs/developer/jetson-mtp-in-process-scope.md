@@ -625,3 +625,29 @@ them is what keeps the engine's row correct whichever one it picks.
 Everything above is greedy or default sampling on one board; production samples at
 temperature 0.8, where acceptance is lower. And `TurnStats` still surfaces no acceptance
 rate, so a future regression would be invisible without a debugger.
+
+## The pin, 2026-10-05: allocation-failure fixes
+
+The Pond segfaulted on the Jetson at about 11:00 on 2026-09-21, 09-25 and 09-26, each time
+as the scheduled prompt started a turn on the local LLM, on days that also logged llama.cpp
+running out of CUDA memory. The GGML vendored in the fork ignored a failed graph buffer
+reservation and then wrote through the NULL buffer: the log shows
+`ggml_gallocr_reserve_n_impl: failed to allocate ... buffer` and then nothing.
+
+The pin moved from `ad6e4b85` to `2dc017bc` (fork branch `fix/ggml-reserve-failure`), which
+carries three native changes listed in the fork's `llama-cpp-sys-2/POND-PATCH.md`:
+
+- upstream `911f6cdc8a`, which reports the failed reservation instead of continuing;
+- upstream `5b335f413e`, the same for an image encode;
+- a fork-only change that forgets the failed layout, so the next decode reserves again
+  instead of crashing on the retry.
+
+A CPU-only test in the fork (`tests/graph_reservation_failure.rs`) crashes at each stage
+without the corresponding change. A decode that finds no room is now an error for that turn,
+not a crash of the process. Whisper's own GGML copy carries the first and third changes
+(`vendor/whisper-rs-sys/POND-PATCH.md`); it has no image encoder.
+
+Merge the fork branch into fork `main` with a merge commit or a fast-forward from the
+command line, never squash or "Rebase and merge": either rewrites `2dc017bc` and leaves this
+pin pointing at a commit no branch holds. When the fork moves to llama-cpp-rs 0.1.157 or
+later, drop the two upstream rows; keep the layout reset and its test until upstream has one.

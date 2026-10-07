@@ -264,7 +264,8 @@ strip = false
 # 0.1.147 and added MTP speculative decoding in 0.1.151, so NO published version has
 # both -- and the live serving path renders every prompt through the former while the
 # measured 2.8x decode win needs the latter. This is 0.1.156 with the OAI surface from
-# 0.1.146 re-applied. See docs/developer/jetson-mtp-in-process-scope.md.
+# 0.1.146 re-applied. See docs/developer/jetson-mtp-in-process-scope.md. Its llama.cpp also
+# carries four allocation-failure fixes, listed in the fork's llama-cpp-sys-2/POND-PATCH.md.
 [patch.crates-io]
 pctx_code_mode = { path = "goose/vendor/pctx_code_mode" }
 pctx_config = { path = "goose/vendor/pctx_config" }
@@ -276,8 +277,8 @@ whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 # path this used made the fork unbuildable anywhere but my Mac. Pinned by full SHA so a
 # device build and a laptop build are the same code -- move the rev deliberately, never
 # by pointing at a branch.
-llama-cpp-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "ad6e4b85573dec3603e861c4f70fb48c3f9e06fb" }
-llama-cpp-sys-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "ad6e4b85573dec3603e861c4f70fb48c3f9e06fb" }
+llama-cpp-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "fdac800234baf4d1ed01de3b939d2237104ccca1" }
+llama-cpp-sys-2 = { git = "https://github.com/jarida-io/llama-cpp-rs-giap", rev = "fdac800234baf4d1ed01de3b939d2237104ccca1" }
 
 [patch."https://github.com/lightsparkdev/frost"]
 frost-core = { git = "https://github.com/Exile10/frost", rev = "280c861abcc3f00edfae523b393e5dbb3a1eb249" }
