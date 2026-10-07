@@ -54,6 +54,8 @@ extraResources:
     to: "matter-server/package-lock.json"
   - from: "../matter-server/tsconfig.json"
     to: "matter-server/tsconfig.json"
+  - from: "../matter-server/vendor"
+    to: "matter-server/vendor"
   - from: "../matter-server/src"
     to: "matter-server/src"
 

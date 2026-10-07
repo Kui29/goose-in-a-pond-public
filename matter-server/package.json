@@ -1,7 +1,7 @@
 {
   "name": "giap-matter-server",
   "version": "0.1.0",
-  "description": "GIAP's Matter controller — matter.js behind the giap-matter WebSocket protocol",
+  "description": "GIAP's Matter controller \u2014 matter.js behind the giap-matter WebSocket protocol",
   "private": true,
   "type": "module",
   "engines": {
@@ -18,7 +18,8 @@
     "@matter/protocol": "0.17.9",
     "@matter/types": "0.17.9",
     "tsx": "4.20.6",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "find-yarn-workspace-root": "file:vendor/find-yarn-workspace-root"
   },
   "devDependencies": {
     "@types/node": "22.18.1",
@@ -28,5 +29,8 @@
   },
   "optionalDependencies": {
     "@matter/nodejs-ble": "0.17.9"
+  },
+  "overrides": {
+    "find-yarn-workspace-root": "$find-yarn-workspace-root"
   }
 }

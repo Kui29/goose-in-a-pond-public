@@ -648,5 +648,7 @@ jobs:
           APP="release/mac-arm64/Goose In A Pond.app"
           test -x "$APP/Contents/Resources/pond-server"
           test -f "$APP/Contents/Resources/matter-server/package.json"
+          test -f "$APP/Contents/Resources/matter-server/vendor/find-yarn-workspace-root/index.cjs"
+          test -f "$APP/Contents/Resources/matter-server/vendor/find-yarn-workspace-root/LICENSE"
           plutil -extract NSMicrophoneUsageDescription raw "$APP/Contents/Info.plist"
           plutil -extract NSBluetoothAlwaysUsageDescription raw "$APP/Contents/Info.plist"
