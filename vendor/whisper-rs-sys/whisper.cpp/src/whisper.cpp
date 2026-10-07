@@ -2372,7 +2372,9 @@ static bool whisper_encode_internal(
         ggml_cgraph * gf = whisper_build_graph_conv(wctx, wstate);
 
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
-            // should never happen as we pre-allocate the memory
+            // should never happen as we pre-allocate the memory; if it does, leave the
+            // scheduler clean for the next graph, as ggml_graph_compute_helper does
+            ggml_backend_sched_reset(sched);
             return false;
         }
 
@@ -2425,7 +2427,9 @@ static bool whisper_encode_internal(
         ggml_cgraph * gf = whisper_build_graph_encoder(wctx, wstate);
 
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
-            // should never happen as we pre-allocate the memory
+            // should never happen as we pre-allocate the memory; if it does, leave the
+            // scheduler clean for the next graph, as ggml_graph_compute_helper does
+            ggml_backend_sched_reset(sched);
             return false;
         }
 
@@ -2441,7 +2445,9 @@ static bool whisper_encode_internal(
         ggml_cgraph * gf = whisper_build_graph_cross(wctx, wstate);
 
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
-            // should never happen as we pre-allocate the memory
+            // should never happen as we pre-allocate the memory; if it does, leave the
+            // scheduler clean for the next graph, as ggml_graph_compute_helper does
+            ggml_backend_sched_reset(sched);
             return false;
         }
 
@@ -2888,7 +2894,9 @@ static bool whisper_decode_internal(
         ggml_cgraph * gf = whisper_build_graph_decoder(wctx, wstate, batch, save_alignment_heads_QKs, false);
 
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
-            // should never happen as we pre-allocate the memory
+            // should never happen as we pre-allocate the memory; if it does, leave the
+            // scheduler clean for the next graph, as ggml_graph_compute_helper does
+            ggml_backend_sched_reset(sched);
             return false;
         }
 

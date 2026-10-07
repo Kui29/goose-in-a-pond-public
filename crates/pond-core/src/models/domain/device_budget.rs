@@ -24,7 +24,13 @@ const MIB: u64 = 1024 * 1024;
 pub const JETSON_TOTAL_RAM_MB: u64 = 7620;
 /// Approximate headroom used by OS + GIAP server + UI at idle (MB).
 pub const SYSTEM_OVERHEAD_MB: u64 = 1500;
-/// Whisper base model resident size (MB).
+/// Whisper base model resident size (MB). Since #427 the accurate-profile state also stays
+/// allocated between transcriptions: 208 MB with five-beam decoding, plus a CUDA scratch pool,
+/// measured on the Orin with `base` on 2026-10-05 (docs/voice-pipeline-efficiency.md). It is NOT
+/// reserved here: adding it halves E4B's window to 4096, below its ~4,500-token preamble. It
+/// comes out of headroom instead -- the Orin had 1,061 MB available after an E4B prewarm on
+/// 2026-10-06, before #427. Re-read free memory on the Orin after the first transcription with
+/// #427 deployed before moving this.
 pub const STT_RESERVED_MB: u64 = 200;
 /// Reserved TTS resident size (MB).
 pub const TTS_RESERVED_MB: u64 = 100;

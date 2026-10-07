@@ -21,7 +21,7 @@ the upstream build behavior.
 Changes from the published crate: this note, `namespace.rs`, build-script wiring,
 a standalone Cargo workspace declaration, the upstream Unlicense text
 (restored from the whisper-rs repository because the published crate omitted it),
-and three native source changes, below.
+and five native source changes, below.
 When updating Whisper, regenerate and inspect the linked symbol inventory and run
 both GPU transcription and inference in the same production process before shipping.
 
@@ -42,6 +42,27 @@ The last log line before such a crash is `ggml_gallocr_reserve_n_impl: failed to
 allocate CUDA0 buffer`; with the change it is followed by `failed to reserve graph
 buffers` and Whisper's own `failed to init ... allocator`, and the transcription
 returns an error.
+
+## Native source change: forget a reservation that could not allocate
+
+`whisper.cpp/ggml/src/ggml-alloc.c`, in `ggml_gallocr_reserve_n_impl`, resets the recorded
+node and leaf counts when a compute buffer cannot be allocated. It is the same change, line
+for line, as the third native change in jarida-io/llama-cpp-rs-giap (`2dc017bc`, its
+`llama-cpp-sys-2/POND-PATCH.md`). Upstream llama.cpp did not have it as of 2026-10-05; drop it
+when the vendored GGML resets a failed layout itself.
+
+The reservation fix above makes the first failure an error. The next allocation of the same
+graph shape still crashed: the failed reservation had recorded a layout that places tensors in
+the buffer it could not allocate, so the allocator found a matching layout, skipped
+reallocation and wrote through NULL. While every transcription made its own state, a failed
+state was dropped and the next call started with a fresh allocator, so this was unreachable.
+Since states are kept and reused (`Engine` in `crates/pond-adapters-whisper/src/in_process.rs`),
+the next transcription after an out-of-memory one reuses that allocator.
+
+There is no Whisper-side test. The bindings here expose `ggml.h` only, not the allocator and
+scheduler APIs, and widening them changes the symbol inventory this crate renames on Linux. The
+fork's `tests/graph_reservation_failure.rs` exercises the identical code on the CPU backend: it
+died with `SIGSEGV` on the second attempt without this change, and refuses all three with it.
 
 ## Native source change: decoder KV cache that cannot grow
 
@@ -88,3 +109,14 @@ out-of-memory path the graph-reservation change above turns into an error freed
 whatever the pointers happened to hold, and when the allocator returned the block a
 previous, already freed state had used, that was a double free. `whisper_batch_free`
 skips null pointers, so an empty batch makes the early free do nothing.
+
+## Native source change: a failed allocation resets the scheduler
+
+`whisper.cpp/src/whisper.cpp` calls `ggml_backend_sched_reset` before returning `false` when
+`ggml_backend_sched_alloc_graph` fails while encoding (conv, encoder, cross) or decoding. This is
+Pond's own change. `ggml_graph_compute_helper` already resets after every compute, failed or not;
+these four returns did not, so the scheduler kept the failed attempt's split assignments and tensor
+copies. With states now kept between transcriptions, the next allocation on that scheduler could
+reuse them against a different graph: a copy-layout assert or misrouted inputs when the shape
+differs (prompt versus beam step, or another wake-word clip length). Worst-case buffers are
+reserved when a state is created, so this path is rare. Drop it when upstream resets there.

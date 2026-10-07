@@ -95,3 +95,8 @@ there first — or push to `jarida-io` and sync the mirror.
   `target/debug` is pure waste on this box (`cargo clean` reclaims ~20GB).
 - The GPU is memory-bandwidth-bound: keep models ≤ the GPU budget
   (`tok/s ≈ 102 / model_GB`, ~1GB headroom for KV cache).
+- In-process Whisper keeps its decode states for the life of the process. With
+  `base` (measured 2026-10-05; see `docs/voice-pipeline-efficiency.md`) the
+  accurate state holds about 208 MB plus its CUDA scratch pool, and local voice
+  mode adds a 170.6 MB wake-word state on first use. Count both in that budget
+  next to the LLM; they are not freed between utterances.

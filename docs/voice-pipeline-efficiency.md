@@ -253,26 +253,47 @@ Notes: Build whisper.cpp with CUDA support (`make clean && WHISPER_CUDA=1 make`)
 #### When the GPU has no room for a transcription
 
 In-process Whisper (`pond-adapters-whisper`, built with `pond-adapters-whisper/cuda`) keeps the
-model weights on the GPU from startup, but every transcription creates a fresh `whisper_state`
-whose KV caches and compute buffers are allocated for that call and freed after it (the one that
-failed on 2026-10-04, with `base`, was 90 MiB). The LLM shares the same 8 GB, so a call can find no room. That is
-an error, not a crash: the log shows `failed to reserve graph buffers`, Whisper's
-`failed to init ... allocator`, then `kind="whisper_transcription_failed"`; the transcribe routes
-answer 500 with the reason, and the wake-word loop moves to its next window. Until 2026-10-04 it
-was a `SIGSEGV` in Whisper's vendored GGML that took the whole Pond down
-(`vendor/whisper-rs-sys/POND-PATCH.md`).
+model weights on the GPU from startup and, since 2026-10-05, a `whisper_state` for each decode
+profile as well (`Engine` in `in_process.rs`). The accurate profile's state is made at load and
+decodes a second of silence there, which sizes its beam-search cache and reserves GGML's CUDA
+scratch pool. The wake-word profile's state is made on its first use. After that a transcription
+allocates nothing, so a GPU the LLM has filled no longer fails it: the CUDA test
+`a_kept_state_transcribes_on_a_full_gpu` fills the GPU with 35 states and still transcribes.
 
-A call can also run out later, after its state exists. The accurate profile decodes with five
-beams, which grows the state's self-attention cache to seven decoders' worth (42 MiB for `base`)
-on the first decode. When that fails, the log shows `whisper_kv_cache_init() failed for
-self-attention cache` and the transcription returns `GenericError(-7)`. Until 2026-10-05 that
-was a double free of the state and a `SIGBUS` (`POND-PATCH.md`, "decoder KV cache that cannot
-grow").
+Before, every transcription made and freed its own state, and each of its allocations was a
+chance to find no room. Two of the ways that failed took the Pond down:
+- **Growing the beam-search cache.** whisper.cpp freed the caller's state, a double free and a
+  `SIGBUS`. Fixed in the vendored source; see `vendor/whisper-rs-sys/POND-PATCH.md`.
+- **Reserving the scratch pool on a state's first decode** (`cuMemAddressReserve` in
+  `ggml-cuda.cu`). GGML aborts here by design. A kept state reserves its pool once, at load.
+
+What it costs, measured on the Jetson with `base` on 2026-10-05: one state is 170.6 MB:
+
+| Part | Size |
+|---|---|
+| KV caches: self, cross and pad | 6.29 + 18.87 + 3.15 MB |
+| Compute buffers: conv, encode, cross and decode | 17.24 + 23.09 + 4.66 + 97.29 MB |
+
+Five-beam decoding grows the self cache to seven decoders' worth, 44.03 MB. The accurate state
+therefore holds about 208 MB, plus its scratch pool. That much was already needed while any
+transcription ran. What changed is that it is no longer handed back to the LLM between calls.
+A Pond serving only the transcribe route, as the Jetson does, holds just the accurate state;
+local voice mode adds the wake-word state, another 170.6 MB. Preparing the state adds about 0.7 s
+to startup (`kind="whisper_state_prepared"`). Every state made is logged
+(`kind="whisper_state_created"`, with a running count), so a count that keeps rising shows states
+being lost to panics, which would put the allocations back on the call path.
+
+If preparing at load fails, the Pond logs `kind="whisper_state_not_prepared"` and starts anyway,
+and the first transcription makes the state as before. Such a call can still fail with no room.
+The log then shows `failed to reserve graph buffers`, Whisper's `failed to init ... allocator`,
+and `kind="whisper_transcription_failed"`. The transcribe routes answer 500 with the reason, and
+the wake-word loop moves to its next window. Calls with the same profile share one state, so
+they run one at a time.
 
 Whisper does not fall back to the CPU. On the Orin, CPU and GPU allocations come from the same
 memory, so a CPU retry competes for what just ran out, and a second, CPU-resident context
 would hold its weights all the time to cover a failure that clears when the LLM's turn ends.
-The next utterance allocates again and normally succeeds. If failures recur, the budget is the
+The next utterance reuses the kept state and normally succeeds once the LLM's turn ends; only a state that was never prepared, or was replaced after a panic, allocates again. If failures recur, the budget is the
 cause: the LLM's context size, not Whisper, is what to shrink.
 
 ### Apple Silicon Mac (dev)

@@ -7,9 +7,12 @@ use pond_core::models::ports::voice_input::{SpeculativeSignal, VoiceInput};
 use pond_voice::dsp::{RmsDetector, SpeechDetector};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 use crate::{
     decode_wav_mono_f32, record_mono_f32_until_silence, record_mono_f32_vad, resample_to_16k,
@@ -35,10 +38,69 @@ const END_OF_SPEECH_RMS: f32 = 0.005;
 /// Wait window for speech onset before giving up.
 const DEFAULT_ONSET_WAIT_SECS: u32 = 10;
 
+/// A loaded model and the states it transcribes with, one per decode profile.
+///
+/// A state is kept and reused rather than created for every call. Creating one allocates its
+/// KV caches and compute buffers on the GPU, and its first decode reserves GGML's CUDA scratch
+/// pool and, for beam search, grows its self-attention cache. On the Jetson the LLM shares that
+/// memory, and a call that found none failed in ways that took the Pond down: a double free
+/// when the cache could not grow (fixed in the vendored whisper.cpp) and an abort when the pool
+/// could not be reserved, which GGML does by design. A kept state makes every one of those
+/// allocations once, so a transcription allocates nothing. The cost is that the memory stays
+/// reserved between calls; it is measured in `docs/voice-pipeline-efficiency.md`.
+struct Engine {
+    context: Arc<WhisperContext>,
+    /// For [`TranscribeOpts::accurate`] and any other beam-search profile.
+    accurate: Mutex<Option<WhisperState>>,
+    /// For [`TranscribeOpts::wake_word`] and any other greedy profile.
+    greedy: Mutex<Option<WhisperState>>,
+    /// States created over this engine's life, logged with each new one: a count that keeps
+    /// rising means states are being lost to errors and the allocations are back on the call path.
+    created: AtomicUsize,
+}
+
+impl Engine {
+    /// Wrap `context` and prepare the accurate profile's state now, at load, with one decode of
+    /// a second of silence. The wake-word state is made on its first use instead: only local
+    /// voice mode uses it, and an instance that serves the transcribe route never would.
+    ///
+    /// A failure here is logged and leaves the state to be made on first use, as before.
+    fn new(context: WhisperContext) -> Self {
+        let engine = Self {
+            context: Arc::new(context),
+            accurate: Mutex::new(None),
+            greedy: Mutex::new(None),
+            created: AtomicUsize::new(0),
+        };
+        let started = std::time::Instant::now();
+        match WhisperRsInput::transcribe_samples(&engine, vec![0.0; 16_000]) {
+            Ok(_) => tracing::info!(
+                kind = "whisper_state_prepared",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "whisper is ready to transcribe without allocating"
+            ),
+            Err(error) => tracing::warn!(
+                kind = "whisper_state_not_prepared",
+                error = format!("{error:#}"),
+                "whisper could not prepare its state at load; the first transcription will"
+            ),
+        }
+        engine
+    }
+
+    /// The slot for `opts`: beam search and greedy decoding size their caches differently.
+    fn slot(&self, opts: &TranscribeOpts) -> (&Mutex<Option<WhisperState>>, &'static str) {
+        match opts.beam_size {
+            Some(_) => (&self.accurate, "accurate"),
+            None => (&self.greedy, "greedy"),
+        }
+    }
+}
+
 /// In-process Whisper adapter. One loaded model per instance.
 pub struct WhisperRsInput {
     /// Swapped by `rebuild_with`; in-flight transcriptions keep their `Arc` of the old one.
-    context: RwLock<Arc<WhisperContext>>,
+    engine: RwLock<Arc<Engine>>,
     /// Last-known model path, recorded for diagnostics.
     model_path: RwLock<PathBuf>,
     /// Hard cap on recording time (seconds). VAD ends earlier on silence.
@@ -84,7 +146,7 @@ impl WhisperRsInput {
             model_path.display()
         );
         Ok(Self {
-            context: RwLock::new(Arc::new(context)),
+            engine: RwLock::new(Arc::new(Engine::new(context))),
             model_path: RwLock::new(model_path),
             duration_secs: DEFAULT_DURATION_SECS,
             silence_ms: DEFAULT_SILENCE_MS,
@@ -133,16 +195,16 @@ impl WhisperRsInput {
                 new_model_path.display()
             ));
         }
-        let new_ctx = tokio::task::spawn_blocking({
+        let new_engine = tokio::task::spawn_blocking({
             let p = new_model_path.clone();
-            move || load_context(&p)
+            move || load_context(&p).map(Engine::new)
         })
         .await
         .map_err(|e| anyhow!("model load join error: {}", e))??;
 
-        let mut ctx_guard = self.context.write().await;
-        *ctx_guard = Arc::new(new_ctx);
-        drop(ctx_guard);
+        let mut engine_guard = self.engine.write().await;
+        *engine_guard = Arc::new(new_engine);
+        drop(engine_guard);
 
         let mut path_guard = self.model_path.write().await;
         *path_guard = new_model_path.clone();
@@ -162,18 +224,21 @@ impl WhisperRsInput {
     pub fn transcribe_wav_bytes(&self, wav_bytes: &[u8]) -> Result<String> {
         let (samples, rate) = crate::decode_wav_mono_f32(wav_bytes)?;
         let samples_16k = crate::resample_to_16k(&samples, rate);
-        let ctx = self.context.blocking_read().clone();
-        Self::transcribe_samples(ctx, samples_16k)
+        let engine = self.engine.blocking_read().clone();
+        Self::transcribe_samples(&engine, samples_16k)
     }
 
     /// Transcribe 16 kHz mono PCM (artifacts stripped); empty → `Ok("")`, panic → `Err`.
-    fn transcribe_samples(ctx: Arc<WhisperContext>, samples: Vec<f32>) -> Result<String> {
-        Self::transcribe_samples_with(ctx, samples, TranscribeOpts::accurate())
+    fn transcribe_samples(engine: &Engine, samples: Vec<f32>) -> Result<String> {
+        Self::transcribe_samples_with(engine, samples, TranscribeOpts::accurate())
     }
 
     /// As [`Self::transcribe_samples`], with per-call cost tuning.
+    ///
+    /// Calls with the same profile share one state, so they run one at a time; a second call
+    /// waits for the first. Whisper serialises on the GPU anyway.
     fn transcribe_samples_with(
-        ctx: Arc<WhisperContext>,
+        engine: &Engine,
         samples: Vec<f32>,
         opts: TranscribeOpts,
     ) -> Result<String> {
@@ -184,11 +249,38 @@ impl WhisperRsInput {
         let sample_count = samples.len();
         let audio_ctx = opts.fit_audio_ctx.then(|| audio_ctx_for(sample_count));
 
+        let (slot, profile) = engine.slot(&opts);
+        // A panic mid-decode leaves the state in an unknown condition, so it is replaced.
+        let mut held = slot.lock().unwrap_or_else(|poisoned| {
+            // Forget the poisoning once the state is dropped, or every later call would land
+            // here again and rebuild the state this slot exists to keep.
+            slot.clear_poison();
+            let mut held = poisoned.into_inner();
+            *held = None;
+            held
+        });
+
         // Catches Rust panics from whisper-rs; a C++ failure in whisper.cpp aborts regardless.
-        let result = catch_unwind(AssertUnwindSafe(move || -> Result<String> {
-            let mut state = ctx
-                .create_state()
-                .context("whisper-rs: create_state failed")?;
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<String> {
+            let state = match held.as_mut() {
+                Some(state) => state,
+                None => {
+                    let state = engine
+                        .context
+                        .create_state()
+                        .context("whisper-rs: create_state failed")?;
+                    // Counted outside the log macro: its fields are evaluated only when
+                    // something is listening.
+                    let created = engine.created.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        kind = "whisper_state_created",
+                        profile,
+                        created,
+                        "whisper made a state to keep for this profile"
+                    );
+                    held.insert(state)
+                }
+            };
 
             let strategy = match opts.beam_size {
                 Some(beam_size) => SamplingStrategy::BeamSearch {
@@ -233,8 +325,8 @@ impl WhisperRsInput {
 
         match result {
             Ok(Ok(text)) => Ok(text),
-            // Most often the GPU had no room for this call's buffers while the LLM held it.
-            // Each call allocates afresh, so the next request retries on its own.
+            // Most often the GPU had no room for something this call needed. The state is kept:
+            // a failed decode leaves it usable, and making a new one would allocate again.
             Ok(Err(e)) => {
                 tracing::warn!(
                     kind = "whisper_transcription_failed",
@@ -245,6 +337,7 @@ impl WhisperRsInput {
                 Err(e)
             }
             Err(panic) => {
+                *held = None;
                 let msg = panic_message(&panic);
                 tracing::error!("whisper-rs panic caught: {}", msg);
                 Err(anyhow!("whisper-rs panic: {}", msg))
@@ -393,11 +486,11 @@ impl WhisperRsInput {
         let silence_ms = self.silence_ms;
         let audio_level_sink = self.audio_level_sink.clone();
 
-        // Clone the `Arc`: a concurrent `rebuild_with` then leaves this turn on the old context.
-        let ctx_arc = self.context.read().await.clone();
+        // Clone the `Arc`: a concurrent `rebuild_with` then leaves this turn on the old engine.
+        let engine = self.engine.read().await.clone();
 
         // VAD starts inference on the first silent poll, before `silence_ms` confirms it.
-        let ctx_for_speculative = ctx_arc.clone();
+        let engine_for_speculative = engine.clone();
         let spec_wake_words = self.wake_words_snapshot();
         let mic = self.mic.clone();
         let detector = Arc::clone(&self.detector);
@@ -422,11 +515,11 @@ impl WhisperRsInput {
                 Ok(SpeechCapture::Samples(combined))
             } else {
                 let speculative_spawn: Box<SpeculativeSpawn> = Box::new(move |samples, rate| {
-                    let ctx = ctx_for_speculative.clone();
+                    let engine = engine_for_speculative.clone();
                     let wake_words = spec_wake_words.clone();
                     std::thread::spawn(move || -> Result<String> {
                         let resampled = resample_to_16k(&samples, rate);
-                        let transcript = Self::transcribe_samples(ctx, resampled)?;
+                        let transcript = Self::transcribe_samples(&engine, resampled)?;
                         // Strip here so speculative and confirmed transcripts stay byte-identical.
                         Ok(strip_wake_words(transcript, &wake_words))
                     })
@@ -463,12 +556,10 @@ impl WhisperRsInput {
             SpeechCapture::Samples(s) => s,
         };
 
-        let ctx_for_blocking = ctx_arc.clone();
-        let transcript = tokio::task::spawn_blocking(move || {
-            Self::transcribe_samples(ctx_for_blocking, samples_result)
-        })
-        .await
-        .map_err(|e| anyhow!("inference join error: {}", e))??;
+        let transcript =
+            tokio::task::spawn_blocking(move || Self::transcribe_samples(&engine, samples_result))
+                .await
+                .map_err(|e| anyhow!("inference join error: {}", e))??;
 
         Ok(Some(self.without_wake_word(transcript)))
     }
@@ -512,9 +603,9 @@ impl VoiceInput for WhisperRsInput {
 impl WhisperBackend for WhisperRsInput {
     fn transcribe_pcm_blocking(&self, samples: &[f32]) -> Result<String> {
         // Only called from `spawn_blocking` workers, where `blocking_read` is safe.
-        let ctx = self.context.blocking_read().clone();
+        let engine = self.engine.blocking_read().clone();
         // Only the wake-word detector calls this, hence the cheap profile.
-        Self::transcribe_samples_with(ctx, samples.to_vec(), TranscribeOpts::wake_word())
+        Self::transcribe_samples_with(&engine, samples.to_vec(), TranscribeOpts::wake_word())
     }
 }
 
@@ -692,7 +783,7 @@ mod tests {
             return;
         };
         let input = WhisperRsInput::new(PathBuf::from(model_env), test_mic()).expect("model loads");
-        let ctx = input.context.blocking_read().clone();
+        let ctx = input.engine.blocking_read().clone();
 
         let wav_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/blobs/jfk.wav");
         let wav = std::fs::read(&wav_path).expect("jfk.wav");
@@ -702,20 +793,14 @@ mod tests {
         let win: Vec<f32> = all.iter().take(16_000 * 5 / 2).copied().collect();
         eprintln!("\n=== 2.5s window, {} samples ===", win.len());
 
-        let full = WhisperRsInput::transcribe_samples_with(
-            ctx.clone(),
-            win.clone(),
-            TranscribeOpts::accurate(),
-        )
-        .unwrap();
+        let full =
+            WhisperRsInput::transcribe_samples_with(&ctx, win.clone(), TranscribeOpts::accurate())
+                .unwrap();
         eprintln!("  audio_ctx UNSET (1500): {full:?}");
 
-        let fitted = WhisperRsInput::transcribe_samples_with(
-            ctx.clone(),
-            win.clone(),
-            TranscribeOpts::wake_word(),
-        )
-        .unwrap();
+        let fitted =
+            WhisperRsInput::transcribe_samples_with(&ctx, win.clone(), TranscribeOpts::wake_word())
+                .unwrap();
         eprintln!(
             "  audio_ctx {} (KWS):     {fitted:?}",
             audio_ctx_for(win.len())
@@ -727,7 +812,7 @@ mod tests {
         eprintln!(
             "  audio_ctx UNSET:        {:?}",
             WhisperRsInput::transcribe_samples_with(
-                ctx.clone(),
+                &ctx,
                 short.clone(),
                 TranscribeOpts::accurate()
             )
@@ -737,7 +822,7 @@ mod tests {
             "  audio_ctx {} (KWS):      {:?}",
             audio_ctx_for(short.len()),
             WhisperRsInput::transcribe_samples_with(
-                ctx.clone(),
+                &ctx,
                 short.clone(),
                 TranscribeOpts::wake_word()
             )
@@ -751,14 +836,16 @@ mod tests {
 mod decode_profiles {
     use super::*;
 
-    fn model() -> Option<Arc<WhisperContext>> {
+    fn model() -> Option<Arc<Engine>> {
         let path = std::env::var_os("WHISPER_TEST_MODEL")?;
         let path = PathBuf::from(path);
         if !path.exists() {
             eprintln!("WHISPER_TEST_MODEL does not exist: {}", path.display());
             return None;
         }
-        Some(Arc::new(load_context(&path).expect("load model")))
+        Some(Arc::new(Engine::new(
+            load_context(&path).expect("load model"),
+        )))
     }
 
     fn jfk_samples() -> Vec<f32> {
@@ -780,7 +867,7 @@ mod decode_profiles {
 
         let t0 = std::time::Instant::now();
         let greedy = WhisperRsInput::transcribe_samples_with(
-            ctx.clone(),
+            &ctx,
             samples.clone(),
             TranscribeOpts::wake_word(),
         )
@@ -789,7 +876,7 @@ mod decode_profiles {
 
         let t1 = std::time::Instant::now();
         let accurate =
-            WhisperRsInput::transcribe_samples_with(ctx, samples, TranscribeOpts::accurate())
+            WhisperRsInput::transcribe_samples_with(&ctx, samples, TranscribeOpts::accurate())
                 .expect("beam decode");
         let accurate_ms = t1.elapsed().as_millis();
 
@@ -807,6 +894,33 @@ mod decode_profiles {
         }
     }
 
+    /// A transcription allocates nothing: loading makes the accurate state, every later call
+    /// reuses it, and the wake-word state is made once, on its first use.
+    #[test]
+    #[ignore]
+    fn each_profile_keeps_one_state_across_transcriptions() {
+        let Some(ctx) = model() else {
+            eprintln!("set WHISPER_TEST_MODEL to run this");
+            return;
+        };
+        let created = || ctx.created.load(Ordering::Relaxed);
+        assert_eq!(created(), 1, "loading prepares the accurate state");
+        for _ in 0..3 {
+            let text = WhisperRsInput::transcribe_samples(&ctx, jfk_samples()).expect("decode");
+            assert!(text.to_lowercase().contains("country"), "{text:?}");
+        }
+        assert_eq!(created(), 1, "an accurate transcription made a state");
+        for _ in 0..2 {
+            WhisperRsInput::transcribe_samples_with(
+                &ctx,
+                jfk_samples(),
+                TranscribeOpts::wake_word(),
+            )
+            .expect("decode");
+        }
+        assert_eq!(created(), 2, "the wake-word state is made once");
+    }
+
     #[test]
     #[ignore]
     fn the_accurate_profile_emits_no_bracketed_annotations() {
@@ -818,7 +932,7 @@ mod decode_profiles {
         let noise: Vec<f32> = (0..16_000 * 3)
             .map(|i| (i as f32 * 0.7).sin() * 0.001)
             .collect();
-        let out = WhisperRsInput::transcribe_samples_with(ctx, noise, TranscribeOpts::accurate())
+        let out = WhisperRsInput::transcribe_samples_with(&ctx, noise, TranscribeOpts::accurate())
             .expect("decode");
         eprintln!("\n  quiet-room transcript: {out:?}\n");
         assert!(!out.contains('['), "annotation leaked through: {out:?}");
@@ -840,7 +954,7 @@ mod decode_profiles {
         };
         let mut held = Vec::new();
         let error = loop {
-            match ctx.create_state() {
+            match ctx.context.create_state() {
                 Ok(state) => held.push(state),
                 Err(error) => break error,
             }
@@ -856,9 +970,36 @@ mod decode_profiles {
         );
 
         drop(held);
-        let after = WhisperRsInput::transcribe_samples(ctx, jfk_samples())
+        let after = WhisperRsInput::transcribe_samples(&ctx, jfk_samples())
             .expect("memory released by the failed and the held states serves a transcription");
         assert!(after.to_lowercase().contains("country"), "{after:?}");
+    }
+
+    /// The point of keeping a state: with the GPU full, a transcription still works, because it
+    /// allocates nothing. Before states were kept, this call created one and failed. Stop the
+    /// Pond first, as for the tests around it. CUDA builds only.
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore]
+    fn a_kept_state_transcribes_on_a_full_gpu() {
+        let Some(ctx) = model() else {
+            eprintln!("set WHISPER_TEST_MODEL to run this");
+            return;
+        };
+        let mut held = Vec::new();
+        while let Ok(state) = ctx.context.create_state() {
+            held.push(state);
+            assert!(
+                held.len() < 256,
+                "the GPU never filled; is this a CUDA build?"
+            );
+        }
+        eprintln!("\n  {} states filled the GPU\n", held.len());
+        let text = WhisperRsInput::transcribe_samples(&ctx, jfk_samples())
+            .expect("a kept state transcribes with no room left");
+        assert!(text.to_lowercase().contains("country"), "{text:?}");
+        assert_eq!(ctx.created.load(Ordering::Relaxed), 1, "a state was made");
+        drop(held);
     }
 
     /// The other place a full GPU fails: decoding, after the state was created. A state is
@@ -900,13 +1041,14 @@ mod decode_profiles {
             params.set_print_timestamps(false);
             params
         };
-        ctx.create_state()
+        ctx.context
+            .create_state()
             .expect("a state on an idle GPU")
             .full(beam(), &samples)
             .expect("a beam decode on an idle GPU");
 
         let mut held = Vec::new();
-        while let Ok(state) = ctx.create_state() {
+        while let Ok(state) = ctx.context.create_state() {
             held.push(state);
             assert!(
                 held.len() < 256,
@@ -937,7 +1079,7 @@ mod decode_profiles {
 
         // The failed state is dropped here with the rest; before the fix it was freed twice.
         drop(held);
-        let after = WhisperRsInput::transcribe_samples(ctx, jfk_samples())
+        let after = WhisperRsInput::transcribe_samples(&ctx, jfk_samples())
             .expect("memory released by the failed and the held states serves a transcription");
         assert!(after.to_lowercase().contains("country"), "{after:?}");
     }
