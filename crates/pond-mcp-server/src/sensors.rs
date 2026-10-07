@@ -9,7 +9,7 @@ use pond_core::user_data::ports::sensor_storage::SensorStorage;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -301,7 +301,7 @@ impl SensorsMcpServer {
         );
 
         let (Some(device_id), Some(sensor_type)) = (device_id, sensor_type) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 // No example values: a model copies them, and unknown ids pass through unresolved.
                 "Please provide both `device_id` and `sensor_type`, taken from the \
                  device and reading the user asked about.",
@@ -312,7 +312,7 @@ impl SensorsMcpServer {
 
         // Live first: stored rows can be arbitrarily old, since only changes are written.
         if let Some(value) = self.live_reading(&device_id, &sensor_type).await {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Current {sensor_type} reading from '{device_id}': {value} (read from the \
                  device just now)"
             ))]));
@@ -323,7 +323,7 @@ impl SensorsMcpServer {
             .get_latest(&device_id, &sensor_type)
             .await
         {
-            Ok(Some(r)) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(Some(r)) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 // Says STORED and how old, or a model relays it as the current reading.
                 "Last STORED {} reading from '{}': {} — recorded {}, {} ago. The device \
                  could not be read just now, so this may no longer be true.",
@@ -333,7 +333,7 @@ impl SensorsMcpServer {
                 r.recorded_at.format("%Y-%m-%d %H:%M:%S UTC"),
                 describe_age(Utc::now() - r.recorded_at),
             ))])),
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(None) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 crate::format::format_no_results(
                     &format!(
                         "a '{}' reading for device '{}' (the sensor may not have \
@@ -345,7 +345,7 @@ impl SensorsMcpServer {
             )])),
             Err(e) => {
                 tracing::warn!(error = %e, device_id, sensor_type, "sensors: get_latest failed");
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     crate::format::format_dead_end(
                         "a sensor reading",
                         "The sensor store could not be read. Every sensor tool uses \
@@ -379,7 +379,7 @@ impl SensorsMcpServer {
         );
 
         let (Some(device_id), Some(sensor_type)) = (device_id, sensor_type) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Please provide both `device_id` and `sensor_type`.",
             )]));
         };
@@ -396,7 +396,7 @@ impl SensorsMcpServer {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, device_id, sensor_type, "sensors: get_history failed");
-                return Ok(CallToolResult::success(vec![Content::text(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
                     crate::format::format_dead_end(
                         "sensor history",
                         "The sensor store could not be read. Every sensor tool uses \
@@ -408,7 +408,7 @@ impl SensorsMcpServer {
         };
 
         if readings.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 crate::format::format_no_results(
                     &format!(
                         "'{}' history for device '{}'{}",
@@ -473,7 +473,7 @@ impl SensorsMcpServer {
             }
         };
 
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -497,18 +497,18 @@ impl SensorsMcpServer {
                 lines.extend(silent);
 
                 if lines.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "No sensors are registered, and no readings have been recorded.",
                     )]));
                 }
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Known sensors ({total} total):\n{}",
                     lines.join("\n"),
                 ))]))
             }
             Err(e) => {
                 tracing::warn!(error = %e, "sensors: list_sensors failed");
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     crate::format::format_dead_end(
                         "the sensor list",
                         "The sensor store could not be read. Every sensor tool uses \

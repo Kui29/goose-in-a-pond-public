@@ -144,10 +144,9 @@ mod tests {
         let total = total_bytes(&entries);
         assert_eq!(
             total,
-            14_478,
-            "the default tool block is now {total} raw bytes, was 14,478. That is \
-             the PRE-minification form (see the module docs); the shim ships \
-             about 7.7% less. If the change is deliberate, update this number and \
+            13_548,
+            "the default tool block is now {total} raw bytes, was 13,548. That is \
+             the PRE-minification form (see the module docs); the provider shim minifies it further. If the change is deliberate, update this number and \
              say why in the commit.\nfull order:\n{}",
             rendered.join("\n")
         );

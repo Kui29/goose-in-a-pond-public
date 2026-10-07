@@ -320,7 +320,7 @@ fn promote_tool_result_images(
     readable: bool,
 ) -> Option<Vec<Message>> {
     use goose::conversation::message::MessageContent;
-    use rmcp::model::RawContent;
+    use rmcp::model::ContentBlock;
 
     // Newest first: the latest frame is the one being asked about.
     let mut promoted: Vec<(String, String)> = Vec::new();
@@ -333,7 +333,7 @@ fn promote_tool_result_images(
                 continue;
             };
             for part in result.content.iter().rev() {
-                if let RawContent::Image(img) = &part.raw {
+                if let ContentBlock::Image(img) = part {
                     promoted.push((img.data.clone(), img.mime_type.clone()));
                     if promoted.len() >= max_images {
                         break 'outer;
@@ -948,9 +948,9 @@ mod tests {
     // ── Tool-result image promotion ──────────────────────────────────────
 
     fn image_tool_response(id: &str, note: &str, images: &[(&str, &str)]) -> Message {
-        let mut parts = vec![rmcp::model::Content::text(note.to_string())];
+        let mut parts = vec![rmcp::model::ContentBlock::text(note.to_string())];
         for (data, mime) in images {
-            parts.push(rmcp::model::Content::image(
+            parts.push(rmcp::model::ContentBlock::image(
                 data.to_string(),
                 mime.to_string(),
             ));
@@ -983,7 +983,7 @@ mod tests {
         Message::user().with_tool_response(
             id,
             Ok(rmcp::model::CallToolResult::success(vec![
-                rmcp::model::Content::text(body.to_string()),
+                rmcp::model::ContentBlock::text(body.to_string()),
             ])),
         )
     }

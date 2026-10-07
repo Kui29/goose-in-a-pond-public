@@ -9,7 +9,7 @@ use pond_core::user_data::ports::settings::SettingsRepository;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, InitializeResult,
+        CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation, InitializeResult,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -275,7 +275,9 @@ impl ScheduleMcpServer {
                 let ui_data = serde_json::json!({ "schedules": ui_schedules });
                 let hint = format!("[[[mcp-ui:schedule:{}]]]\n", ui_data);
                 let full_result = format!("{}{}", hint, text);
-                Ok(CallToolResult::success(vec![Content::text(full_result)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    full_result,
+                )]))
             }
             Err(e) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -307,7 +309,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
         };
 
         let Some(delta) = parse_duration(&raw) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "How long? Give a duration like \"10 minutes\", \"1h30m\" or \"90 seconds\" \
                  as 'duration'. A timer set for the wrong moment is worse than one not set, \
                  so this is not guessed.",
@@ -346,11 +348,11 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
         };
 
         match self.scheduler.create_task(req).await {
-            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Timer set: \"{label}\" [{id}] — fires once at {}.",
                 fire_at.format("%H:%M:%S UTC")
             ))])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Could not set the timer: {e}."
             ))])),
         }
@@ -431,7 +433,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
             let cron = match cron {
                 Some(c) => c,
                 None => {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         // Teach the field ORDER, never a ready-made cron: a copied one
                         // creates a real schedule at a time nobody asked for.
                         "Could not parse a schedule from: \"{}\". \
@@ -500,11 +502,11 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
             };
 
             match self.scheduler.create_task(req).await {
-                Ok(schedule) => Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(schedule) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Schedule created: \"{}\" [{}] — {} {} (agent prompt: \"{}\")",
                     schedule.label, schedule.id, schedule.cron, schedule.timezone, prompt,
                 ))])),
-                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Failed to create schedule: {e}. Check the cron expression '{}' is valid 6-field format.",
                     cron
                 ))])),
@@ -533,7 +535,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
             };
 
             if id.is_empty() {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
                     "Missing schedule ID. Please provide the ID of the schedule to update. \
                      Use list_schedules to see all schedules and their IDs.",
                 )]));
@@ -607,7 +609,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
                         TaskKind::Webhook { webhook_url } => format!("webhook: {webhook_url}"),
                         TaskKind::SensorTrigger(spec) => sensor_rule_summary(spec),
                     };
-                    Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Schedule updated: \"{}\" [{}] — {} {} ({})",
                         schedule.label,
                         schedule.id,
@@ -616,7 +618,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
                         prompt_preview,
                     ))]))
                 }
-                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Failed to update schedule '{}': {e}. Check the ID is correct \
                      (use list_schedules to see all schedules).",
                     id
@@ -653,7 +655,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
             }
         };
         match result {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Schedule '{id}' {past}."
             ))])),
             Err(e) => Err(ErrorData::new(
@@ -692,7 +694,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
         };
 
         if tz_names.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "No timezones provided. Pass one or more IANA timezone names \
                  like 'America/New_York', 'Europe/London', 'Asia/Tokyo'.",
             )]));
@@ -735,7 +737,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             lines.join("\n"),
         )]))
     }

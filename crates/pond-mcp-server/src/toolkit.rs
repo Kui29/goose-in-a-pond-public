@@ -8,7 +8,7 @@ use pond_core::mcp::ports::tools::tool_selection_control::{
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -92,19 +92,19 @@ Use when a capability you need seems to be missing.")]
     ) -> Result<CallToolResult, ErrorData> {
         crate::set_current_tool("list_tool_groups");
         let Some(control) = &self.control else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "All available tools are already loaded for this conversation.",
             )]));
         };
         // `_meta`, not `current_session_id()`: that global is raced by concurrent chat streams.
         let Some(session_id) = crate::session_from_meta(&ctx.meta) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "All available tools are already loaded for this conversation.",
             )]));
         };
         let groups = control.group_status(&session_id).await;
         if groups.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "All available tools are already loaded for this conversation.",
             )]));
         }
@@ -128,7 +128,7 @@ Use when a capability you need seems to be missing.")]
             "\nTo use a group that is NOT loaded, call enable_tool_group with its exact name; \
              its tools become available straight away.",
         );
-        Ok(CallToolResult::success(vec![Content::text(out)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(out)]))
     }
 
     #[tool(description = "\
@@ -141,19 +141,19 @@ Load a group of tools that is not currently available, by its exact name (e.g. \
     ) -> Result<CallToolResult, ErrorData> {
         crate::set_current_tool("enable_tool_group");
         let Some(control) = &self.control else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "All available tools are already loaded — there is nothing to enable.",
             )]));
         };
         let Some(group) = resolve_group(&params.0) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Which group? Call list_tool_groups to see the exact names, then pass one as \
                  'group'.",
             )]));
         };
         // Authorisation: only `_meta` can't be raced, and an unattributed call widens nothing.
         let Some(session_id) = crate::session_from_meta(&ctx.meta) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Tool groups cannot be changed from here — every group already available \
                  to you is loaded.",
             )]));
@@ -167,7 +167,7 @@ Load a group of tools that is not currently available, by its exact name (e.g. \
                     group = %group,
                     loaded = ?loaded,
                 );
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Loaded '{group}'. Its tools are available now — go ahead and call the one you \
                      need. Loaded groups: {}.",
                     loaded.join(", ")
@@ -175,14 +175,14 @@ Load a group of tools that is not currently available, by its exact name (e.g. \
             }
             // Loaded, not yet callable: the catch-all reply would send the model looping.
             Err(ToolSelectionError::NotReady(_)) => {
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Loaded '{group}', but its tools only become callable on your next turn. \
                      Do not call one yet — answer with what you have, or use a tool you \
                      already had."
                 ))]))
             }
             // Reported as success: an MCP error makes small models retry the same bad call.
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Could not load '{group}': {e}. Call list_tool_groups for the exact names."
             ))])),
         }

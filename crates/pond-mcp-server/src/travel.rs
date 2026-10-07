@@ -12,7 +12,7 @@ use pond_core::user_data::services::nearby::{self, NEAR_HOME_KM};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, Meta,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, Meta,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -303,7 +303,7 @@ impl TravelMcpServer {
         );
 
         if app == RideApp::Bolt {
-            return CallToolResult::error(vec![Content::text(format!(
+            return CallToolResult::error(vec![ContentBlock::text(format!(
                 "Bolt publishes no link that fills in a trip, so none was made. Nothing has been \
                  booked.{}",
                 destination
@@ -379,7 +379,7 @@ impl TravelMcpServer {
              Uber, which also shows the fare."
                 .to_string(),
         );
-        CallToolResult::success(vec![Content::text(lines.join("\n"))])
+        CallToolResult::success(vec![ContentBlock::text(lines.join("\n"))])
     }
 
     /// The place `query` names: the match nearest home within [`NEAR_HOME_KM`], or with no
@@ -530,7 +530,7 @@ fn describe(point: &RidePoint) -> String {
 /// free text themselves.
 fn directions(params: &DirectionsParams) -> Result<(String, PhoneLink), CallToolResult> {
     let Some(destination) = text_param(&params.destination, &params.extra, DESTINATION_KEYS) else {
-        return Err(CallToolResult::error(vec![Content::text(
+        return Err(CallToolResult::error(vec![ContentBlock::text(
             "No destination was given, so no directions link was made.",
         )]));
     };
@@ -604,7 +604,7 @@ impl TravelMcpServer {
             Ok((text, link)) => {
                 let mut lines = vec![text];
                 lines.extend(self.deliver(meta, link).await);
-                CallToolResult::success(vec![Content::text(lines.join("\n"))])
+                CallToolResult::success(vec![ContentBlock::text(lines.join("\n"))])
             }
         }
     }
@@ -677,7 +677,7 @@ impl TravelMcpServer {
 
     /// The body of `book_ride`, apart from the rmcp wrapper so tests can call it.
     pub async fn book_result(&self, meta: &Meta, params: &BookRideParams) -> CallToolResult {
-        let fail = |text: String| CallToolResult::error(vec![Content::text(text)]);
+        let fail = |text: String| CallToolResult::error(vec![ContentBlock::text(text)]);
         let Some(accounts) = self.ride_accounts.get() else {
             return fail(
                 "Booking rides is not set up on this pond, so no ride offer was sent.".into(),
@@ -760,7 +760,7 @@ impl TravelMcpServer {
             text.push('\n');
             text.push_str(&note);
         }
-        CallToolResult::success(vec![Content::text(text)])
+        CallToolResult::success(vec![ContentBlock::text(text)])
     }
 }
 

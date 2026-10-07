@@ -105,12 +105,12 @@ pub fn degrade_result(
     what_is_missing: &str,
     signup_url: &str,
 ) -> rmcp::model::CallToolResult {
-    use rmcp::model::{Content, RawContent};
+    use rmcp::model::ContentBlock;
     let existing: String = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            RawContent::Text(t) => Some(t.text.as_str()),
+        .filter_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -118,7 +118,7 @@ pub fn degrade_result(
     if existing.trim().is_empty() {
         return result;
     }
-    rmcp::model::CallToolResult::success(vec![Content::text(format_degraded(
+    rmcp::model::CallToolResult::success(vec![ContentBlock::text(format_degraded(
         &existing,
         what_is_missing,
         signup_url,

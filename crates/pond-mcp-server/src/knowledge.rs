@@ -3,7 +3,7 @@
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, InitializeResult,
+        CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation, InitializeResult,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -106,7 +106,7 @@ verbatim.")]
         if topic.is_empty() {
             // Nudge: return guidance as content so the model can retry
             eprintln!("[wikipedia] empty topic, nudging model to retry");
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "I need a topic to look up. Retry this tool with a 'topic' parameter \
                  containing the person, place, event, or concept to search for.",
             )]));
@@ -115,7 +115,9 @@ verbatim.")]
         match self.fetch_article_summary(&topic).await {
             Ok(text) => {
                 let full_result = prepend_knowledge_hint(&topic, &text);
-                Ok(CallToolResult::success(vec![Content::text(full_result)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    full_result,
+                )]))
             }
             Err(WikiFetchError::NotFound) => {
                 eprintln!(
@@ -125,7 +127,9 @@ verbatim.")]
                 match self.search_and_fetch_best(&topic).await {
                     Ok(text) => {
                         let full_result = prepend_knowledge_hint(&topic, &text);
-                        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+                        Ok(CallToolResult::success(vec![ContentBlock::text(
+                            full_result,
+                        )]))
                     }
                     Err(e) => Err(e),
                 }

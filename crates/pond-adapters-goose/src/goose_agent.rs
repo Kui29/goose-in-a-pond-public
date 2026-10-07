@@ -30,7 +30,6 @@ use pond_core::user_data::ports::prompt_template::PromptTemplateRepository;
 use pond_core::user_data::ports::settings::SettingsRepository;
 use pond_core::user_data::ports::skill::UserSkillRepository;
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -3243,13 +3242,15 @@ impl GooseAdapter {
                                                     tool_result
                                                         .content
                                                         .iter()
-                                                        .filter_map(|c| match c.deref() {
-                                                            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                                                        .filter_map(|c| match c {
+                                                            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
                                                             _ => None,
                                                         })
                                                         .collect::<Vec<_>>()
                                                         .join("\n"),
-                                                    false,
+                                                    // RMCP 2.1 reports a tool's own failures, bad
+                                                    // arguments included, as a result marked is_error.
+                                                    tool_result.is_error == Some(true),
                                                 ),
                                                 Err(e) => (format!("Error: {e}"), true),
                                             };
@@ -3912,8 +3913,8 @@ impl AgentPort for GooseAdapter {
                         let text = call_result
                             .content
                             .iter()
-                            .filter_map(|c| match c.deref() {
-                                rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                            .filter_map(|c| match c {
+                                rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
                             })
                             .collect::<Vec<_>>()
@@ -6630,7 +6631,7 @@ mod tests {
         goose::conversation::message::Message::user().with_tool_response(
             id,
             Ok(rmcp::model::CallToolResult::success(vec![
-                rmcp::model::Content::text(body.to_string()),
+                rmcp::model::ContentBlock::text(body.to_string()),
             ])),
         )
     }

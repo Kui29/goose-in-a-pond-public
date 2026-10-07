@@ -4,7 +4,7 @@ use pond_adapters_weather::WeatherProvider;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -81,7 +81,7 @@ which city. Never guess weather or shell out for it.")]
 
         match &self.weather {
             // An error, not a success: the prompt's anti-repeat rule only applies to failures.
-            None => Ok(CallToolResult::error(vec![Content::text(
+            None => Ok(CallToolResult::error(vec![ContentBlock::text(
                 "Weather is not configured on this pond: no location is set in settings. \
                  No other tool, shell command or external request can supply it.",
             )])),
@@ -109,11 +109,13 @@ which city. Never guess weather or shell out for it.")]
                         });
                         let hint = format!("[[[mcp-ui:weather:{}]]]\n", ui_data);
                         let full_result = format!("{}{}", hint, data.as_context_block());
-                        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+                        Ok(CallToolResult::success(vec![ContentBlock::text(
+                            full_result,
+                        )]))
                     }
                     Err(e) => {
                         tracing::warn!("weather: fetch failed: {e}");
-                        Ok(CallToolResult::error(vec![Content::text(format!(
+                        Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                             "Weather fetch failed: {e}"
                         ))]))
                     }
@@ -147,7 +149,7 @@ location for the configured home. Never guess data.")]
 
         match &self.weather {
             // A failure, reported as one (see the current-weather tool).
-            None => Ok(CallToolResult::error(vec![Content::text(
+            None => Ok(CallToolResult::error(vec![ContentBlock::text(
                 "Weather is not configured on this pond: no location is set in settings. \
                  No other tool, shell command or external request can supply a forecast.",
             )])),
@@ -181,11 +183,13 @@ location for the configured home. Never guess data.")]
                         });
                         let hint = format!("[[[mcp-ui:weather:{}]]]\n", ui_data);
                         let full_result = format!("{}{}", hint, data.as_context_block());
-                        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+                        Ok(CallToolResult::success(vec![ContentBlock::text(
+                            full_result,
+                        )]))
                     }
                     Err(e) => {
                         tracing::warn!("weather: forecast fetch failed: {e}");
-                        Ok(CallToolResult::error(vec![Content::text(format!(
+                        Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                             "Forecast fetch failed: {e}"
                         ))]))
                     }

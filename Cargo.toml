@@ -61,10 +61,8 @@ uninlined_format_args = "allow"
 string_slice = "warn"
 
 [workspace.dependencies]
-# rmcp — goose declares ^1.4; GIAP forces =1.5.0 so the submodule and
-# pond-mcp-server resolve to a single rmcp. Feature list is the union.
-# No GIAP workspace member uses rmcp directly.
-rmcp = { version = "=1.5.0", features = ["schemars", "auth", "server", "client",
+# Keep Goose, optional code-mode, and the MCP server on the same patched protocol SDK.
+rmcp = { version = "=2.1.0", features = ["schemars", "auth", "server", "client",
     "transport-io", "macros", "transport-child-process",
     "transport-streamable-http-client", "transport-streamable-http-client-reqwest",
     "transport-streamable-http-client-unix-socket"] }
@@ -268,6 +266,10 @@ strip = false
 # measured 2.8x decode win needs the latter. This is 0.1.156 with the OAI surface from
 # 0.1.146 re-applied. See docs/developer/jetson-mtp-in-process-scope.md.
 [patch.crates-io]
+pctx_code_mode = { path = "goose/vendor/pctx_code_mode" }
+pctx_config = { path = "goose/vendor/pctx_config" }
+pctx_registry = { path = "goose/vendor/pctx_registry" }
+pctx_code_execution_runtime = { path = "goose/vendor/pctx_code_execution_runtime" }
 # Isolate Whisper's private GGML symbols from llama.cpp on Linux.
 whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 # A git rev, not a path: the Jetson has no sibling checkout, so the workspace-relative

@@ -8,7 +8,7 @@ use pond_core::user_data::ports::device_registry::{Device, DeviceRegistry};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -345,7 +345,7 @@ impl DeviceControlMcpServer {
         };
 
         match self.control.describe(&device_id).await {
-            Ok(description) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(description) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 render_description(&description),
             )])),
             Err(e) => Ok(guidance(format!("Couldn't describe '{device_id}': {e}"))),
@@ -375,9 +375,9 @@ impl DeviceControlMcpServer {
         };
 
         match self.control.state(&device_id).await {
-            Ok(state) => Ok(CallToolResult::success(vec![Content::text(render_state(
-                &state,
-            ))])),
+            Ok(state) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                render_state(&state),
+            )])),
             Err(e) => Ok(guidance(format!("Couldn't read '{device_id}': {e}"))),
         }
     }
@@ -394,7 +394,7 @@ impl DeviceControlMcpServer {
         let device_id = p.device_id.trim();
 
         if device_id.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Which device? Provide `device_id` (the device name or id) plus what to change: \
                  power (on/off), brightness (0-100), target_temp (°C), or locked (true/false).",
             )]));
@@ -415,7 +415,7 @@ impl DeviceControlMcpServer {
             && p.tilt.is_none()
             && p.valve.is_none()
         {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "No change requested for '{device_id}'. Specify one of: power (on/off), \
                  brightness (0-100), target_temp (°C), locked (true/false), hue (0-360) + \
                  saturation (0-100), color_temp (kelvin, e.g. 2700 for warm white), \
@@ -636,13 +636,13 @@ impl DeviceControlMcpServer {
             message.push_str(&note);
         }
 
-        Ok(CallToolResult::success(vec![Content::text(message)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(message)]))
     }
 }
 
 /// Error-as-guidance: the LLM reads this and adapts (per the MCP server standard).
 fn guidance(msg: String) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(msg)])
+    CallToolResult::success(vec![ContentBlock::text(msg)])
 }
 
 // ── Natural device resolution (pure, unit-tested) ────────────────────────────

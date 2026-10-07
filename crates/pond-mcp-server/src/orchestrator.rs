@@ -11,7 +11,7 @@ use pond_core::user_data::ports::recipe::AgentRecipeRepository;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -440,7 +440,7 @@ and is refused when the model runs on this device (one agent at a time).")]
             }
         };
         // Refusals are tool SUCCESS text: a protocol error makes small models retry verbatim.
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     /// The whole decision, with the two I/O steps in the middle.
@@ -513,7 +513,7 @@ finished. Only tasks started in this conversation.")]
                 refusal.message()
             }
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     /// All of `check_task`: authorise the CALLER exactly as `delegate` does, then the TASK.

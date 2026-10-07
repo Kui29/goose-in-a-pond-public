@@ -3,7 +3,7 @@
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, ProtocolVersion,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, ProtocolVersion,
         ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -92,7 +92,9 @@ impl SystemMcpServer {
         });
         let hint = format!("[[[mcp-ui:time:{}]]]\n", ui_data);
         let full_result = format!("{}{}", hint, text);
-        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            full_result,
+        )]))
     }
 
     #[tool(description = "Get system info: OS, hostname, memory, and disk usage.")]
@@ -170,7 +172,9 @@ impl SystemMcpServer {
         let hint = format!("[[[mcp-ui:system:{}]]]\n", ui_data);
         let plain_text = sections.join("\n\n");
         let full_result = format!("{}{}", hint, plain_text);
-        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            full_result,
+        )]))
     }
 
     #[tool(description = "Send a desktop popup notification to the user.")]
@@ -210,7 +214,7 @@ impl SystemMcpServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Notification sent: \"{}\" — {}{}",
             title,
             body,

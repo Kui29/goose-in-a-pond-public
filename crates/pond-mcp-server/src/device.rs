@@ -6,7 +6,7 @@ use pond_core::user_data::ports::skill::UserSkillRepository;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, InitializeResult,
+        CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation, InitializeResult,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -110,10 +110,12 @@ impl DeviceMcpServer {
                     let ui_data = serde_json::json!({ "devices": ui_devices });
                     let hint = format!("[[[mcp-ui:devices:{}]]]\n", ui_data);
                     let full_result = format!("{}{}", hint, text);
-                    return Ok(CallToolResult::success(vec![Content::text(full_result)]));
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
+                        full_result,
+                    )]));
                 }
 
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(e) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -144,7 +146,7 @@ impl DeviceMcpServer {
             "User: {}\nAssistant name: {}\nTimezone: {}\nLocation: {}",
             settings.user_name, settings.assistant_name, settings.timezone, location,
         );
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -171,7 +173,7 @@ impl DeviceMcpServer {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "Load a user skill's full instructions into context by name.")]
@@ -209,14 +211,14 @@ impl DeviceMcpServer {
                 } else {
                     format!("Did you mean: {}?", suggestions.join(", "))
                 };
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     crate::format::format_dead_end(
                         &format!("an active skill named '{}'", params.0.name),
                         &hint,
                     ),
                 )]))
             }
-            Some(s) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Some(s) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Skill: {}\n{}\n\n{}",
                 s.name, s.description, s.content
             ))])),

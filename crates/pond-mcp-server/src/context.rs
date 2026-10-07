@@ -14,7 +14,7 @@ use pond_core::user_data::services::memory_relevance::keyword_terms;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorData, Implementation, InitializeResult, Meta,
+        CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult, Meta,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -246,13 +246,13 @@ impl ContextMcpServer {
         let query = params.0.query.clone().unwrap_or_default();
         let limit = params.0.limit.unwrap_or(5) as usize;
         match self.run_recall(&ctx.meta, &query, limit).await {
-            Ok(lines) if lines.is_empty() => Ok(CallToolResult::success(vec![Content::text(
+            Ok(lines) if lines.is_empty() => Ok(CallToolResult::success(vec![ContentBlock::text(
                 crate::format::format_no_results(
                     &format!("anything about '{query}'"),
                     &["giap-context__get_recent_context"],
                 ),
             )])),
-            Ok(lines) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(lines) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 lines.join("\n"),
             )])),
             Err(refusal) => Ok(to_result(Err(refusal))),
@@ -293,7 +293,7 @@ fn to_result(outcome: Result<Vec<ContextItem>, Refusal>) -> CallToolResult {
             lines.join("\n")
         }
     };
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 #[tool_handler]

@@ -9,7 +9,7 @@ use pond_core::user_data::ports::memory_repository::MemoryRepository;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, InitializeResult,
+        CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation, InitializeResult,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -199,10 +199,12 @@ impl MemoryMcpServer {
             let ui_data = serde_json::json!({ "memories": ui_memories });
             let hint = format!("[[[mcp-ui:memory:{}]]]\n", ui_data);
             let full_result = format!("{}{}", hint, text);
-            return Ok(CallToolResult::success(vec![Content::text(full_result)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                full_result,
+            )]));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -222,7 +224,7 @@ impl MemoryMcpServer {
         } else {
             let user_msg = crate::last_user_message();
             if user_msg.is_empty() {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
                     "No content provided to save. Tell me what you'd like me to remember.",
                 )]));
             }
@@ -332,7 +334,9 @@ impl MemoryMcpServer {
         });
         let hint = format!("[[[mcp-ui:memory_saved:{}]]]\n", ui_data);
         let full_result = format!("{}{}", hint, plain_text);
-        Ok(CallToolResult::success(vec![Content::text(full_result)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            full_result,
+        )]))
     }
 
     #[tool(description = "Delete a specific memory by ID or by exact content match.")]
@@ -353,7 +357,7 @@ impl MemoryMcpServer {
                 .memory_repo
                 .log_event(MemoryEventKind::Deleted, id, None, None)
                 .await;
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Memory {id} deleted."
             ))]));
         }
@@ -379,13 +383,13 @@ impl MemoryMcpServer {
                     .memory_repo
                     .log_event(MemoryEventKind::Deleted, &id, None, None)
                     .await;
-                return Ok(CallToolResult::success(vec![Content::text(format!(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Memory deleted: {}",
                     found.content
                 ))]));
             }
 
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 crate::format::format_dead_end(
                     "a memory with that exact content",
                     "Nothing was deleted. Call recall_memories to find the exact \
@@ -394,7 +398,7 @@ impl MemoryMcpServer {
             )]));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             "Provide either an 'id' or 'content' to identify the memory to forget.".to_string(),
         )]))
     }
