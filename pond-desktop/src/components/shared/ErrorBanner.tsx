@@ -7,6 +7,8 @@ function friendlyMessage(raw: string): string {
     return "Could not reach the server. Check that it is running and try again.";
   if (s.includes("401") || s.includes("unauthorized"))
     return "Your session has expired. Reload the page to sign in again.";
+  if (s.includes("onboarding_required"))
+    return "Setup isn't finished. Reload the page to finish setting up.";
   if (s.includes("403") || s.includes("forbidden"))
     return "You don't have permission to do that.";
   if (s.includes("404") || s.includes("not found"))

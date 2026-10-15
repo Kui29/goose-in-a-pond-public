@@ -145,7 +145,7 @@ async fn app_with_repo(
         llamafile_url: "http://127.0.0.1:8080".to_string(),
         tts: None,
         tts_control: None,
-        // Real repository: the mock drops `chat_model`, and `complete_onboarding` 400s without it.
+        // Real repository: `complete_onboarding` reads back what the wizard wrote.
         settings_repo: Arc::new(pond_infra::sqlite_settings::SqliteSettingsRepository::new(
             settings_pool,
         )),
@@ -359,8 +359,7 @@ async fn get_settings_without_a_token_is_unauthorized() {
 }
 
 /// The minimum `Settings` patch `POST /onboard/complete` accepts.
-const FULL_SETUP: &str =
-    r#"{"user_name":"Jerry","assistant_name":"Goose","timezone":"UTC","chat_model":"mock"}"#;
+const FULL_SETUP: &str = r#"{"user_name":"Jerry","assistant_name":"Goose","timezone":"UTC"}"#;
 
 async fn put_settings_no_token(app: &axum::Router, body: &'static str) -> StatusCode {
     app.clone()
@@ -442,6 +441,54 @@ async fn put_settings_without_a_token_is_refused_once_onboarded() {
         put_settings_no_token(&app, FULL_SETUP).await,
         StatusCode::UNAUTHORIZED
     );
+}
+
+async fn complete(app: &axum::Router) -> (StatusCode, serde_json::Value) {
+    let res: Response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/onboard/complete")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), 65536).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// The wizard has no model step: the model is chosen on the Models page, behind the guard.
+#[tokio::test]
+async fn onboarding_completes_without_a_conversation_model() {
+    let (app, _tmp) = app_with_step(Some(OnboardingStep::WakeWord)).await;
+    assert_eq!(
+        put_settings_no_token(&app, FULL_SETUP).await,
+        StatusCode::OK
+    );
+    let (status, body) = complete(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn onboarding_still_needs_a_name_to_complete() {
+    let (app, _tmp) = app_with_step(Some(OnboardingStep::WakeWord)).await;
+    assert_eq!(
+        put_settings_no_token(
+            &app,
+            r#"{"user_name":" ","assistant_name":"Goose","timezone":"UTC"}"#
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (status, body) = complete(&app).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["missing_fields"], serde_json::json!(["user_name"]));
 }
 
 /// One router, no restart: the gate must read onboarding state live, not latch.

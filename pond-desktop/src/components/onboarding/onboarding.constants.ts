@@ -20,7 +20,7 @@ export const STEPS: StepMeta[] = [
 ];
 
 // ── FE / BE step mapping ───────────────────────────────────
-// 7 wizard steps vs 10 backend `OnboardingStep` variants; `Completed` is set only by
+// 6 wizard steps vs 10 backend `OnboardingStep` variants; `Completed` is set only by
 // POST /onboard/complete, and the merged personality step reports GooseIdentity.
 
 /** FE step id → backend `OnboardingStep` name to POST when that step persists. */
@@ -30,7 +30,6 @@ export const FE_STEP_TO_BE: Record<string, string> = {
   locale:      "Location",
   personality: "GooseIdentity",
   "wake-word": "WakeWord",
-  model:       "Model",
   complete:    "Extensions",
 };
 
@@ -43,9 +42,9 @@ const BE_TO_FE_INDEX: Record<string, number> = {
   Personality:   3, // merged into the personality FE step
   GooseIdentity: 3,
   WakeWord:      4,
-  Model:         5,
-  Extensions:    6,
-  Completed:     6, // handled separately; keep at the last visible step
+  Model:         5, // no model step; the model is chosen after setup
+  Extensions:    5,
+  Completed:     5, // handled separately; keep at the last visible step
 };
 
 /** FE step index to resume at for a backend `OnboardingStep` name; unknown names give 0. */

@@ -10,6 +10,7 @@ import { useOnboarding } from "./onboarding.context";
 import { STEPS, beStepToFeIndex } from "./onboarding.constants";
 import { useOnboardingPersist } from "./hooks/useOnboardingPersist";
 import { StepHeader, Actions, ErrorBanner } from "./primitives/StepShell";
+import { finishFailure } from "./finishFailure";
 
 import { StepWelcome } from "./steps/StepWelcome";
 import { StepAboutYou } from "./steps/StepAboutYou";
@@ -78,10 +79,20 @@ function StepRail({ stepIndex, onJump }: { stepIndex: number; onJump: (i: number
 
 // ── Inner Wizard (needs OnboardingContext) ────────────────────
 
-function WizardInner({ onComplete }: { onComplete: () => void }) {
+function WizardInner({ onComplete }: { onComplete: () => Promise<void> }) {
   const { draft, loading } = useOnboarding();
   const { persist, isPersisting, error, clearError } = useOnboardingPersist();
   const [stepIndex, setStepIndex] = useState(0);
+  const [finishError, setFinishError] = useState<string | null>(null);
+
+  const finish = useCallback(async () => {
+    setFinishError(null);
+    try {
+      await onComplete();
+    } catch (e) {
+      setFinishError(finishFailure(e));
+    }
+  }, [onComplete]);
 
   // Resume at the furthest step the backend has recorded; on failure start at 0.
   useEffect(() => {
@@ -143,7 +154,7 @@ function WizardInner({ onComplete }: { onComplete: () => void }) {
     case "locale":      body = <StepLocale />; break;
     case "personality": body = <StepPersonality />; break;
     case "wake-word":   body = <StepWakeWord />; break;
-    case "complete":    body = <StepComplete onFinish={onComplete} />; break;
+    case "complete":    body = <StepComplete onFinish={finish} />; break;
     default:            body = null;
   }
 
@@ -179,6 +190,7 @@ function WizardInner({ onComplete }: { onComplete: () => void }) {
             <StepHeader stepIndex={stepIndex} />
 
             {error && <ErrorBanner message={error} onDismiss={clearError} />}
+            {finishError && <ErrorBanner message={finishError} onDismiss={() => setFinishError(null)} />}
 
             {body}
 
@@ -202,7 +214,8 @@ function WizardInner({ onComplete }: { onComplete: () => void }) {
 // ── Public export (wraps with OnboardingProvider) ─────────────
 
 interface OnboardingWizardProps {
-  onComplete: () => void;
+  /** Rejects when the pond refuses to finish; the wizard stays open and says why. */
+  onComplete: () => Promise<void>;
 }
 
 export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
