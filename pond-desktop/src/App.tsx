@@ -38,13 +38,9 @@ export function App() {
       <InkScope>
         <OnboardingWizard
         onComplete={async () => {
-          try {
-            await api.completeOnboarding();
-          } catch (err) {
-            console.warn("completeOnboarding failed (non-fatal):", err);
-          }
-            dispatch({ type: "SET_NEEDS_ONBOARDING", payload: false });
-          }}
+          await api.completeOnboarding();
+          dispatch({ type: "SET_NEEDS_ONBOARDING", payload: false });
+        }}
         />
       </InkScope>
     );

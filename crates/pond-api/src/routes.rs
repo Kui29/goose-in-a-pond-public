@@ -1227,9 +1227,6 @@ async fn complete_onboarding(
     if settings.timezone.trim().is_empty() {
         missing.push("timezone");
     }
-    if settings.chat_model.trim().is_empty() {
-        missing.push("chat_model");
-    }
     if !missing.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
