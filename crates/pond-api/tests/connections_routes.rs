@@ -1,6 +1,7 @@
 //! `docs/architecture/pond-connections.md`: the connections routes answer any paired token in
 //! every state and never a caller without one; only the host, the phone that claimed the pond or
-//! a household member's device may change the network; each station refusal keeps its code.
+//! an owner's, member's or developer's device may change the network; each station refusal keeps
+//! its code.
 #[path = "support/connections_pond.rs"]
 mod connections_pond;
 
@@ -18,7 +19,7 @@ use pond_core::security::ports::handshake::Handshake;
 use serde_json::json;
 
 const NOT_A_MEMBER: &str =
-    "Only the phone that set up this pond, or a household member's device, can change its network";
+    "This device belongs to no one in the household, so it cannot change the pond's network";
 
 const ROUTES: [(&str, &str); 5] = [
     ("GET", "/api/v1/connections"),

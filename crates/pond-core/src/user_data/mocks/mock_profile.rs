@@ -1,6 +1,6 @@
 //! In-memory mock implementation of `ProfileRepository` for tests.
 
-use crate::user_data::domain::profile::{CreateProfileRequest, Profile};
+use crate::user_data::domain::profile::{CreateProfileRequest, HouseholdRole, Profile};
 use crate::user_data::ports::profile::ProfileRepository;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -32,18 +32,22 @@ impl Default for MockProfileRepository {
 impl ProfileRepository for MockProfileRepository {
     async fn create(&self, request: CreateProfileRequest) -> Result<Profile> {
         let now = Utc::now();
+        let mut store = self.store.write().await;
+        let role = if store.values().any(|p| p.role == HouseholdRole::Owner) {
+            HouseholdRole::Member
+        } else {
+            HouseholdRole::Owner
+        };
         let profile = Profile {
             id: Uuid::new_v4().to_string(),
             display_name: request.display_name,
             avatar_emoji: request.avatar_emoji,
             preferences: HashMap::new(),
+            role,
             created_at: now,
             updated_at: now,
         };
-        self.store
-            .write()
-            .await
-            .insert(profile.id.clone(), profile.clone());
+        store.insert(profile.id.clone(), profile.clone());
         Ok(profile)
     }
 
@@ -67,6 +71,16 @@ impl ProfileRepository for MockProfileRepository {
             .get_mut(profile_id)
             .ok_or_else(|| anyhow!("profile not found: {}", profile_id))?;
         profile.preferences = prefs;
+        profile.updated_at = Utc::now();
+        Ok(profile.clone())
+    }
+
+    async fn set_role(&self, profile_id: &str, role: HouseholdRole) -> Result<Profile> {
+        let mut store = self.store.write().await;
+        let profile = store
+            .get_mut(profile_id)
+            .ok_or_else(|| anyhow!("profile not found: {}", profile_id))?;
+        profile.role = role;
         profile.updated_at = Utc::now();
         Ok(profile.clone())
     }

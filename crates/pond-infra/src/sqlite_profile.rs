@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use pond_core::user_data::domain::profile::{CreateProfileRequest, Profile};
+use pond_core::user_data::domain::profile::{CreateProfileRequest, HouseholdRole, Profile};
 use pond_core::user_data::ports::profile::ProfileRepository;
 use serde_json;
 use sqlx::{Pool, Sqlite};
@@ -28,6 +28,7 @@ struct ProfileRow {
     display_name: String,
     avatar_emoji: String,
     preferences: String,
+    role: String,
     created_at: String,
     updated_at: String,
 }
@@ -45,6 +46,8 @@ fn row_to_profile(row: ProfileRow) -> Profile {
         display_name: row.display_name,
         avatar_emoji: row.avatar_emoji,
         preferences: prefs,
+        // The column's CHECK admits only known roles; a stray value narrows to guest.
+        role: HouseholdRole::parse(&row.role).unwrap_or(HouseholdRole::Guest),
         created_at: parse_dt(&row.created_at),
         updated_at: parse_dt(&row.updated_at),
     }
@@ -58,8 +61,10 @@ impl ProfileRepository for SqliteProfileRepository {
         let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         sqlx::query(
-            "INSERT INTO profiles (id, display_name, avatar_emoji, preferences, created_at, updated_at) \
-             VALUES (?, ?, ?, '{}', ?, ?)",
+            "INSERT INTO profiles (id, display_name, avatar_emoji, preferences, role, created_at, updated_at) \
+             VALUES (?, ?, ?, '{}', \
+                     CASE WHEN EXISTS (SELECT 1 FROM profiles WHERE role = 'owner') THEN 'member' ELSE 'owner' END, \
+                     ?, ?)",
         )
         .bind(&id)
         .bind(&request.display_name)
@@ -69,19 +74,14 @@ impl ProfileRepository for SqliteProfileRepository {
         .execute(&self.pool)
         .await?;
 
-        Ok(Profile {
-            id,
-            display_name: request.display_name,
-            avatar_emoji: request.avatar_emoji,
-            preferences: HashMap::new(),
-            created_at: now,
-            updated_at: now,
-        })
+        self.get(&id)
+            .await?
+            .ok_or_else(|| anyhow!("profile not found after create: {}", id))
     }
 
     async fn get(&self, profile_id: &str) -> Result<Option<Profile>> {
         let row: Option<ProfileRow> =
-            sqlx::query_as("SELECT id, display_name, avatar_emoji, preferences, created_at, updated_at FROM profiles WHERE id = ?")
+            sqlx::query_as("SELECT id, display_name, avatar_emoji, preferences, role, created_at, updated_at FROM profiles WHERE id = ?")
                 .bind(profile_id)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -90,7 +90,7 @@ impl ProfileRepository for SqliteProfileRepository {
 
     async fn list(&self) -> Result<Vec<Profile>> {
         let rows: Vec<ProfileRow> =
-            sqlx::query_as("SELECT id, display_name, avatar_emoji, preferences, created_at, updated_at FROM profiles ORDER BY created_at ASC, rowid ASC")
+            sqlx::query_as("SELECT id, display_name, avatar_emoji, preferences, role, created_at, updated_at FROM profiles ORDER BY created_at ASC, rowid ASC")
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(row_to_profile).collect())
@@ -116,6 +116,22 @@ impl ProfileRepository for SqliteProfileRepository {
             return Err(anyhow!("profile not found: {}", profile_id));
         }
 
+        self.get(profile_id)
+            .await?
+            .ok_or_else(|| anyhow!("profile not found after update: {}", profile_id))
+    }
+
+    async fn set_role(&self, profile_id: &str, role: HouseholdRole) -> Result<Profile> {
+        let now_str = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let result = sqlx::query("UPDATE profiles SET role = ?, updated_at = ? WHERE id = ?")
+            .bind(role.as_str())
+            .bind(&now_str)
+            .bind(profile_id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow!("profile not found: {}", profile_id));
+        }
         self.get(profile_id)
             .await?
             .ok_or_else(|| anyhow!("profile not found after update: {}", profile_id))
@@ -208,5 +224,86 @@ mod tests {
             .unwrap();
         repo.delete(&profile.id).await.unwrap();
         assert!(repo.get(&profile.id).await.unwrap().is_none());
+    }
+
+    async fn named(repo: &SqliteProfileRepository, name: &str) -> Profile {
+        repo.create(CreateProfileRequest {
+            display_name: name.to_string(),
+            avatar_emoji: "X".to_string(),
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_profile_owns_the_pond_and_later_ones_are_members() {
+        let (repo, _tmp) = make_repo().await;
+        assert_eq!(named(&repo, "Brian").await.role, HouseholdRole::Owner);
+        assert_eq!(named(&repo, "Grace").await.role, HouseholdRole::Member);
+    }
+
+    #[tokio::test]
+    async fn set_role_persists() {
+        let (repo, _tmp) = make_repo().await;
+        let grace = named(&repo, "Grace").await;
+        repo.set_role(&grace.id, HouseholdRole::Guest)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get(&grace.id).await.unwrap().unwrap().role,
+            HouseholdRole::Guest
+        );
+        assert!(repo
+            .set_role("nobody", HouseholdRole::Member)
+            .await
+            .is_err());
+    }
+
+    /// The migration's backfill, after its `ALTER TABLE`, run against existing members.
+    async fn backfill(pool: &Pool<Sqlite>) {
+        let sql = include_str!("../migrations/system/0061_profile_role.sql");
+        let (_alter, updates) = sql.split_once(';').unwrap();
+        sqlx::query("UPDATE profiles SET role = 'member'")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(updates).execute(pool).await.unwrap();
+    }
+
+    async fn owners(repo: &SqliteProfileRepository) -> Vec<String> {
+        repo.list()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.role == HouseholdRole::Owner)
+            .map(|p| p.display_name)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_backfill_makes_the_primary_member_the_owner() {
+        let tmp = tempdir().unwrap();
+        let db = Database::init(tmp.path()).await.unwrap();
+        let repo = SqliteProfileRepository::new(db.system.clone());
+        named(&repo, "Brian").await;
+        let grace = named(&repo, "Grace").await;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('primary_profile_id', ?)")
+            .bind(&grace.id)
+            .execute(&db.system)
+            .await
+            .unwrap();
+        backfill(&db.system).await;
+        assert_eq!(owners(&repo).await, vec!["Grace"]);
+    }
+
+    #[tokio::test]
+    async fn without_a_primary_member_the_backfill_makes_the_oldest_the_owner() {
+        let tmp = tempdir().unwrap();
+        let db = Database::init(tmp.path()).await.unwrap();
+        let repo = SqliteProfileRepository::new(db.system.clone());
+        named(&repo, "Brian").await;
+        named(&repo, "Grace").await;
+        backfill(&db.system).await;
+        assert_eq!(owners(&repo).await, vec!["Brian"]);
     }
 }

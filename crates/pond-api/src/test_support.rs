@@ -245,3 +245,26 @@ async fn post_json(
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
     )
 }
+
+/// The host credential [`as_dashboard`] carries.
+pub fn dashboard_credential() -> &'static crate::host_guard::HostCredential {
+    static CREDENTIAL: std::sync::OnceLock<crate::host_guard::HostCredential> =
+        std::sync::OnceLock::new();
+    CREDENTIAL.get_or_init(crate::host_guard::HostCredential::generate)
+}
+
+/// `router` as the pond's own dashboard: every request carries the host credential, as
+/// `PondApiClient.hostHeaders` sends it on household-wide changes, so it acts as an owner.
+pub fn as_dashboard(router: axum::Router) -> axum::Router {
+    router
+        .layer(axum::middleware::map_request(
+            |mut request: axum::extract::Request| async move {
+                request.headers_mut().insert(
+                    crate::host_guard::CREDENTIAL_HEADER,
+                    dashboard_credential().as_str().parse().unwrap(),
+                );
+                request
+            },
+        ))
+        .layer(axum::Extension(dashboard_credential().clone()))
+}

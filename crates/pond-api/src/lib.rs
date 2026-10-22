@@ -5,6 +5,7 @@ pub mod cleanup;
 pub mod connections;
 pub mod download_failure;
 pub mod host_guard;
+pub mod household_access;
 pub(crate) mod image_normalize;
 pub mod insecure_dev;
 pub mod middleware;

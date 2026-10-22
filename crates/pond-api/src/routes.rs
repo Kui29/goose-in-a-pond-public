@@ -34,7 +34,7 @@ use pond_core::security::ports::handshake::{
 use pond_core::shared::ports::event_bus::BusEvent;
 use pond_core::shared::services::chat::ChatService;
 use pond_core::user_data::domain::onboarding::OnboardingStep;
-use pond_core::user_data::domain::profile::CreateProfileRequest;
+use pond_core::user_data::domain::profile::{CreateProfileRequest, HouseholdRole, Profile};
 use pond_core::user_data::domain::schedule::{
     OneShotTimePassed, Schedule, SensorTriggerSpec, TaskKind,
 };
@@ -71,6 +71,7 @@ use pond_core::user_data::domain::prompt_template::PromptTemplate;
 use pond_core::user_data::domain::recipe::AgentRecipe;
 use pond_core::user_data::domain::skill::UserSkill;
 
+use crate::household_access::Household;
 use crate::middleware::onboarding_guard::require_onboarding_complete;
 use crate::model_views::record_to_dto;
 use crate::{AppState, DownloadEntry};
@@ -81,6 +82,7 @@ use pond_core::user_data::domain::profile::ProfileScope;
 use pond_core::user_data::domain::proposal::{ProposalAudience, PROPOSAL_SESSION_ID};
 use pond_core::user_data::ports::draft::DraftRepository;
 use pond_core::user_data::ports::proposal::ProposalRepository;
+use pond_core::user_data::services::household_access::{may_edit_profile, Action};
 
 // ───────────────────────── REST API Routes ─────────────────────────
 
@@ -282,6 +284,7 @@ pub fn api_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/models/{category}/{name}", delete(delete_model))
         .route("/profiles", get(list_profiles))
         .route("/profiles/{id}", get(get_profile).delete(delete_profile))
+        .route("/profiles/{id}/role", patch(set_profile_role))
         .route("/sensors", post(record_sensor))
         .route("/sensors/{device_id}", get(get_recent_sensors))
         // The unified event log; DELETE clears it ("clear my activity").
@@ -4446,11 +4449,15 @@ fn bridged_children_of(
 
 async fn unregister_device(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
     remote: Option<
         axum::Extension<Arc<dyn pond_core::security::ports::remote_access::RemoteRevocation>>,
     >,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    if household.device_id() != Some(id.as_str()) {
+        household.require(Action::RemoveOtherDevice)?;
+    }
     use pond_core::user_data::ports::device_commissioning::{
         matter_bridged_endpoint, matter_node_id,
     };
@@ -5204,8 +5211,10 @@ fn geocode_target(
 
 async fn update_settings(
     State(state): State<Arc<AppState>>,
+    household: Household,
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    household.require(Action::ChangeSettings)?;
     let Json(mut patch) = body.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -6664,9 +6673,11 @@ fn refuse_unavailable_category(
 /// POST /api/v1/models/{category}/{name}/activate — assign to a role; mirrored into settings.
 async fn activate_model(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path((category, name)): Path<(String, String)>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    household.require(Action::ChangeModel)?;
     let Some(model_repo) = state.model_repo.clone() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -7636,6 +7647,50 @@ async fn link_or_copy_blob(src: &std::path::Path, dest: &std::path::Path) -> any
 
 // ── Profile handlers ──────────────────────────────────────────────────────────
 
+fn profile_json(p: &Profile) -> Value {
+    json!({
+        "id":           p.id,
+        "display_name": p.display_name,
+        "avatar_emoji": p.avatar_emoji,
+        "preferences":  p.preferences,
+        "role":         p.role,
+        "created_at":   p.created_at.to_rfc3339(),
+        "updated_at":   p.updated_at.to_rfc3339(),
+    })
+}
+
+/// `409 last_owner` when `profile` is the household's only owner, so it keeps one. Deleting the
+/// last person is allowed: the household is then empty and its next profile becomes the owner.
+async fn keep_an_owner(
+    state: &AppState,
+    profile: &Profile,
+    deleting: bool,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if profile.role != HouseholdRole::Owner {
+        return Ok(());
+    }
+    let profiles = state.profile_repo.list().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+    })?;
+    let owners = profiles
+        .iter()
+        .filter(|p| p.role == HouseholdRole::Owner)
+        .count();
+    if owners > 1 || (deleting && profiles.len() == 1) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "last_owner",
+            "reason": "The household needs at least one owner; make someone else an owner first",
+        })),
+    ))
+}
+
 async fn list_profiles(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -7645,26 +7700,16 @@ async fn list_profiles(
             Json(json!({"error": e.to_string()})),
         )
     })?;
-    let list: Vec<Value> = profiles
-        .iter()
-        .map(|p| {
-            json!({
-                "id":           p.id,
-                "display_name": p.display_name,
-                "avatar_emoji": p.avatar_emoji,
-                "preferences":  p.preferences,
-                "created_at":   p.created_at.to_rfc3339(),
-                "updated_at":   p.updated_at.to_rfc3339(),
-            })
-        })
-        .collect();
+    let list: Vec<Value> = profiles.iter().map(profile_json).collect();
     Ok(Json(json!({ "profiles": list })))
 }
 
 async fn create_profile(
     State(state): State<Arc<AppState>>,
+    household: Household,
     body: Result<Json<CreateProfileRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    household.require(Action::ManageHousehold)?;
     let Json(req) = body.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -7677,17 +7722,7 @@ async fn create_profile(
             Json(json!({"error": e.to_string()})),
         )
     })?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id":           profile.id,
-            "display_name": profile.display_name,
-            "avatar_emoji": profile.avatar_emoji,
-            "preferences":  profile.preferences,
-            "created_at":   profile.created_at.to_rfc3339(),
-            "updated_at":   profile.updated_at.to_rfc3339(),
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(profile_json(&profile))))
 }
 
 async fn get_profile(
@@ -7701,14 +7736,7 @@ async fn get_profile(
         )
     })?;
     match profile {
-        Some(p) => Ok(Json(json!({
-            "id":           p.id,
-            "display_name": p.display_name,
-            "avatar_emoji": p.avatar_emoji,
-            "preferences":  p.preferences,
-            "created_at":   p.created_at.to_rfc3339(),
-            "updated_at":   p.updated_at.to_rfc3339(),
-        }))),
+        Some(p) => Ok(Json(profile_json(&p))),
         None => Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "profile not found"})),
@@ -7723,9 +7751,11 @@ struct UpdatePrefsRequest {
 
 async fn update_profile_prefs(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
     body: Result<Json<UpdatePrefsRequest>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    may_edit_profile(&household.caller, &id).map_err(|refusal| household.refused(&refusal))?;
     let Json(req) = body.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -7752,10 +7782,30 @@ async fn update_profile_prefs(
     })))
 }
 
-async fn delete_profile(
+#[derive(serde::Deserialize)]
+struct SetRoleRequest {
+    role: String,
+}
+
+async fn set_profile_role(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
+    body: Result<Json<SetRoleRequest>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    household.require(Action::ManageHousehold)?;
+    let Json(req) = body.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid request: {}", e)})),
+        )
+    })?;
+    let role = HouseholdRole::parse(&req.role).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unknown_role", "roles": HouseholdRole::ALL})),
+        )
+    })?;
     let profile = state
         .profile_repo
         .get(&id)
@@ -7772,6 +7822,42 @@ async fn delete_profile(
                 Json(json!({"error": format!("no such profile: {id}")})),
             )
         })?;
+    if role != HouseholdRole::Owner {
+        keep_an_owner(&state, &profile, false).await?;
+    }
+    let updated = state.profile_repo.set_role(&id, role).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+    })?;
+    Ok(Json(profile_json(&updated)))
+}
+
+async fn delete_profile(
+    State(state): State<Arc<AppState>>,
+    household: Household,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    household.require(Action::ManageHousehold)?;
+    let profile = state
+        .profile_repo
+        .get(&id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("no such profile: {id}")})),
+            )
+        })?;
+
+    keep_an_owner(&state, &profile, true).await?;
 
     // Count before deleting: most `profile_id` foreign keys cascade.
     let memories = state
@@ -9933,8 +10019,12 @@ struct ApiCreateScheduleRequest {
 /// on the spot, which is not what scheduling it for then asked for.
 async fn create_schedule(
     State(state): State<Arc<AppState>>,
+    household: Household,
     result: Result<Json<ApiCreateScheduleRequest>, JsonRejection>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10024,8 +10114,12 @@ async fn create_schedule(
 /// `DELETE /api/v1/schedules/:id` — remove a scheduled task.
 async fn delete_schedule(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10041,9 +10135,13 @@ async fn delete_schedule(
 /// `PUT /api/v1/schedules/:id` — update an existing scheduled task.
 async fn update_schedule(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
     result: Result<Json<ApiUpdateScheduleRequest>, JsonRejection>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10095,8 +10193,12 @@ struct ApiUpdateScheduleRequest {
 /// `POST /api/v1/schedules/:id/pause` — pause a scheduled task.
 async fn pause_schedule(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10112,8 +10214,12 @@ async fn pause_schedule(
 /// `POST /api/v1/schedules/:id/resume` — resume a paused task.
 async fn resume_schedule(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -10134,8 +10240,12 @@ async fn resume_schedule(
 /// `POST /api/v1/schedules/:id/run-now` — fire a task immediately.
 async fn run_schedule_now(
     State(state): State<Arc<AppState>>,
+    household: Household,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(refused) = household.require(Action::ManageSchedules) {
+        return refused;
+    }
     let Some(scheduler) = &state.scheduler else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

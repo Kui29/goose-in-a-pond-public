@@ -299,7 +299,10 @@ async fn pond(agent: Arc<VisionAgent>, provider: &str, model: &str) -> Pond {
         voice_samples: Default::default(),
     });
     Pond {
-        app: build_router(state, std::path::PathBuf::from("pond-desktop/dist")),
+        app: pond_api::test_support::as_dashboard(build_router(
+            state,
+            std::path::PathBuf::from("pond-desktop/dist"),
+        )),
         agent,
         sessions,
         settings,

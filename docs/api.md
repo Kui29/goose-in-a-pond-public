@@ -114,6 +114,7 @@ All errors return JSON:
 | GET | /profiles | Protected | List all profiles |
 | GET | /profiles/{id} | Protected | Get a profile |
 | DELETE | /profiles/{id} | Protected | Delete a profile |
+| PATCH | /profiles/{id}/role | Protected | Set a member's role (owner only) |
 | GET | /devices | Protected | List registered devices |
 | GET | /devices/self | Protected | The calling device, and the household member it belongs to |
 | POST | /devices | Protected | Register a device |
@@ -1331,6 +1332,42 @@ Searches GitHub for llamafile releases from Mozilla-Ocho/llamafile matching the 
 
 Profiles represent household members. Sessions and memories are scoped to a profile.
 
+### Roles
+
+Each profile has a `role`: `owner`, `member`, `guest` or `developer`. The first profile
+created becomes the owner and later ones are members. A paired phone acts with the role of the
+member it belongs to. The host credential (the Pond's own dashboard), and the phone that claimed
+the Pond while it belongs to no one yet, act as an owner. A phone that belongs to no one may read
+but not change.
+
+| Action | Routes | Allowed roles |
+|--------|--------|---------------|
+| Manage the household | `POST /profiles`, `DELETE /profiles/{id}`, `PATCH /profiles/{id}/role`, another member's `PATCH /profiles/{id}` | owner |
+| Remove another person's device | `DELETE /devices/{id}` (your own device: anyone) | owner |
+| Change settings | `PUT /settings` | owner |
+| Switch the model | `POST /models/{category}/{name}/activate` | owner, developer |
+| Manage schedules | `POST/PUT/DELETE /schedules…`, `…/pause`, `…/resume`, `…/run-now` | owner, member, developer |
+| Use the Pond from outside the home | `POST /remote-access/enrollment` | owner, member, developer |
+| Change the Pond's network | the `/connections` writes (answer `403 not_allowed`) | owner, member, developer |
+
+Before onboarding completes no roles exist yet, so setup is unaffected: a caller with no token
+(which the middleware admits only from the Pond's own host) acts as an owner, and a paired phone
+that belongs to no one may do everything except change the Pond's network.
+
+A refusal is always:
+
+```json
+{
+  "error": "role_required",
+  "action": "change_settings",
+  "role": "member",
+  "allowed": ["owner"],
+  "reason": "Only an owner can change the pond's settings; this device belongs to a member"
+}
+```
+
+`role` is `null` when the device belongs to no one.
+
 ### POST /profiles *(Public)*
 
 **Request**
@@ -1349,6 +1386,7 @@ Profiles represent household members. Sessions and memories are scoped to a prof
   "display_name": "Jerry",
   "avatar_emoji": "🦆",
   "preferences": { "language": "en", "timezone": "Africa/Nairobi" },
+  "role": "owner",
   "created_at": "2026-04-09 08:00:00",
   "updated_at": "2026-04-09 08:00:00"
 }
@@ -1385,7 +1423,28 @@ Merges preference keys into the profile. Existing keys not in the request are pr
 
 | Code | Meaning |
 |------|---------|
+| 403 | `role_required`: not the caller's own profile, and the caller is not an owner |
 | 404 | Profile not found |
+
+---
+
+### PATCH /profiles/{id}/role
+
+Owner only. Sets a member's role.
+
+**Request**
+```json
+{ "role": "guest" }
+```
+
+**Response 200** — updated profile object
+
+| Code | Meaning |
+|------|---------|
+| 400 | `unknown_role` |
+| 403 | `role_required` |
+| 404 | Profile not found |
+| 409 | `last_owner`: the household would have no owner |
 
 ---
 
@@ -1415,7 +1474,9 @@ and are never counted or removed.
 `cleared_primary_profile` is `true` when this member was `settings.primary_profile_id`,
 which is cleared before the delete so it cannot dangle.
 
-**Response 404** — no such profile.
+**Response 404** — no such profile. **Response 409** `last_owner` — this is the household's
+only owner and others remain (the last person in the household may be deleted). **Response 403**
+`role_required` — the caller is not an owner.
 
 ---
 

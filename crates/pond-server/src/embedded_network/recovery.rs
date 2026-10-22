@@ -361,7 +361,7 @@ async fn operation(
         if !runtime.config().map_err(failed)?.enabled {
             return Err(StatusCode::CONFLICT.into());
         }
-        // Recorded before any coordinator call, as `register_phone` does: the coordinator holds
+        // Recorded before any coordinator call, as `enroll` does: the coordinator holds
         // an enrollment for this device whatever becomes of the calls below, so a removal while
         // they are in flight, or after a crash, must revoke it.
         runtime.record_enrolled(&device).map_err(failed)?;
@@ -747,7 +747,7 @@ mod tests {
         let (handshake, headers) = paired_phone(data.path()).await;
         helper.answer("inspect", 0, STOOD_DOWN);
         helper.answer("replace", 3, AT_CAPACITY);
-        let refused = register_phone(
+        let refused = enroll(
             State(runtime),
             ConnectInfo("192.168.1.20:1234".parse().unwrap()),
             Extension(handshake),

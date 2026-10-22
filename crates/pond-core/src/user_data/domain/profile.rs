@@ -12,8 +12,37 @@ pub struct Profile {
     pub avatar_emoji: String,
     /// Flat string map; pond-api converts to/from JSON objects at the HTTP boundary.
     pub preferences: HashMap<String, String>,
+    pub role: HouseholdRole,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// What a household member may do; `household_access` maps each action to the roles allowed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HouseholdRole {
+    Owner,
+    Member,
+    Guest,
+    Developer,
+}
+
+impl HouseholdRole {
+    pub const ALL: [HouseholdRole; 4] = [Self::Owner, Self::Member, Self::Guest, Self::Developer];
+
+    /// The spelling stored in `profiles.role` and sent on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Member => "member",
+            Self::Guest => "guest",
+            Self::Developer => "developer",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.as_str() == value)
+    }
 }
 
 /// Whose data a read or write is scoped to.

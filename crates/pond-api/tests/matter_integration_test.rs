@@ -153,7 +153,10 @@ async fn make_app_with_settings(
         weather_provider: None,
     });
 
-    let router = build_router(state, std::path::PathBuf::from("pond-desktop/dist"));
+    let router = pond_api::test_support::as_dashboard(build_router(
+        state,
+        std::path::PathBuf::from("pond-desktop/dist"),
+    ));
     (router, matter, settings_repo, tmp)
 }
 
