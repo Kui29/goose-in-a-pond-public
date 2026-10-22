@@ -358,7 +358,7 @@ export class PondApiClient {
 
   /**
    * Headers for routes that also need the host credential: pairing codes, remote access,
-   * onboarding reset, and speech synthesis by a caller without a token.
+   * onboarding reset, speech synthesis by a caller without a token, and owner-only household changes.
    */
   async hostHeaders(): Promise<Record<string, string>> {
     const credential = await hostCredential();
@@ -478,7 +478,7 @@ export class PondApiClient {
    * f32-rounded: fold the sent patch into any baseline; epsilon compares break integers > 2^24.
    */
   updateSettings(patch: Partial<Settings>): Promise<Settings> {
-    return this.put("/api/v1/settings", patch);
+    return this.hostRequest("PUT", "/api/v1/settings", patch);
   }
 
   // ── Audio devices ─────────────────────────────────────────
@@ -547,7 +547,7 @@ export class PondApiClient {
   }
 
   unregisterDevice(id: string): Promise<void> {
-    return this.del(`/api/v1/devices/${encodeURIComponent(id)}`);
+    return this.hostRequest("DELETE", `/api/v1/devices/${encodeURIComponent(id)}`);
   }
 
   /** Mark a device online ("Turn on" in the Devices UI) — refreshes its heartbeat. */
@@ -715,7 +715,7 @@ export class PondApiClient {
       once?: boolean;
     },
   ): Promise<Schedule> {
-    return this.post<Record<string, unknown>>("/api/v1/schedules", {
+    return this.hostRequest<Record<string, unknown>>("POST", "/api/v1/schedules", {
       name: body.name,
       cron: body.cron,
       prompt: body.prompt,
@@ -739,7 +739,7 @@ export class PondApiClient {
   }
 
   deleteSchedule(id: string): Promise<void> {
-    return this.del(`/api/v1/schedules/${encodeURIComponent(id)}`);
+    return this.hostRequest("DELETE", `/api/v1/schedules/${encodeURIComponent(id)}`);
   }
 
   async updateSchedule(
@@ -752,7 +752,8 @@ export class PondApiClient {
       once?: boolean;
     },
   ): Promise<Schedule> {
-    const t = await this.put<Record<string, unknown>>(
+    const t = await this.hostRequest<Record<string, unknown>>(
+      "PUT",
       `/api/v1/schedules/${encodeURIComponent(id)}`,
       patch,
     );
@@ -1386,7 +1387,8 @@ export class PondApiClient {
   }
 
   activateModel(provider: string, name: string, role: string): Promise<void> {
-    return this.post(
+    return this.hostRequest(
+      "POST",
       `/api/v1/models/${encodeURIComponent(provider)}/${encodeURIComponent(name)}/activate`,
       { role },
     );
@@ -1798,15 +1800,15 @@ export class PondApiClient {
   // ── Schedule actions ──────────────────────────────────────────
 
   pauseSchedule(id: string): Promise<void> {
-    return this.post(`/api/v1/schedules/${encodeURIComponent(id)}/pause`);
+    return this.hostRequest("POST", `/api/v1/schedules/${encodeURIComponent(id)}/pause`);
   }
 
   resumeSchedule(id: string): Promise<void> {
-    return this.post(`/api/v1/schedules/${encodeURIComponent(id)}/resume`);
+    return this.hostRequest("POST", `/api/v1/schedules/${encodeURIComponent(id)}/resume`);
   }
 
   runScheduleNow(id: string): Promise<void> {
-    return this.post(`/api/v1/schedules/${encodeURIComponent(id)}/run-now`);
+    return this.hostRequest("POST", `/api/v1/schedules/${encodeURIComponent(id)}/run-now`);
   }
 
   // ── GGUF / HuggingFace model search & download ────────────────
@@ -1942,7 +1944,7 @@ export class PondApiClient {
     avatar_emoji: string;
     preferences: Record<string, string>;
   }> {
-    return this.post("/api/v1/profiles", {
+    return this.hostRequest("POST", "/api/v1/profiles", {
       display_name: displayName,
       ...(avatarEmoji ? { avatar_emoji: avatarEmoji } : {}),
     });
@@ -1960,7 +1962,7 @@ export class PondApiClient {
     display_name: string;
     preferences: Record<string, string>;
   }> {
-    return this.patch(`/api/v1/profiles/${encodeURIComponent(profileId)}`, {
+    return this.hostRequest("PATCH", `/api/v1/profiles/${encodeURIComponent(profileId)}`, {
       preferences,
     });
   }
