@@ -1,6 +1,7 @@
 pub mod activity_watcher;
 pub mod consolidation_schedule;
 pub mod device_edit;
+pub mod household_access;
 pub mod identity_resolution;
 pub mod inference_lane;
 pub mod location;

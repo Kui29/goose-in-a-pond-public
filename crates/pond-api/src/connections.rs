@@ -15,13 +15,11 @@ use pond_core::network::domain::wifi::{
 };
 use pond_core::network::ports::setup_radios::SetupRadios;
 use pond_core::network::ports::wired_interfaces::WiredInterfaces;
-use pond_core::network::services::connection_changes::{
-    may_change_connections, ChangeRefusal, NOT_ALLOWED,
-};
+use pond_core::network::services::connection_changes::NOT_ALLOWED;
 use pond_core::network::services::wifi_connections::WifiConnections;
-use pond_core::security::domain::proven_device::{DeviceRung, ProvenDevice};
+use pond_core::security::domain::proven_device::ProvenDevice;
 use pond_core::security::ports::policy::Principal;
-use pond_core::user_data::ports::device_attribution::DeviceAttribution;
+use pond_core::user_data::services::household_access::{may, Action, Refusal as AccessRefusal};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -73,41 +71,15 @@ fn wired(connections: Option<Extension<Arc<Connections>>>) -> Result<Arc<Connect
         .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, UNSUPPORTED))
 }
 
-/// Whether this caller may use the write routes. The attribution store is read only when neither
-/// the host credential nor the claim already answers.
+/// Whether this caller may use the write routes.
 async fn change_access(
     state: &AppState,
     principal: Option<&Principal>,
     credential: Option<&HostCredential>,
     headers: &HeaderMap,
-) -> Result<(), ChangeRefusal> {
-    if crate::host_guard::presents_credential(credential, headers) {
-        return may_change_connections(true, None, None, &DeviceRung::NoDevice);
-    }
-    let device = principal.map_or_else(ProvenDevice::none, ProvenDevice::from_principal);
-    let claimant = match (&state.setup_claims, device.id()) {
-        (Some(claims), Some(_)) => claims.claimed_by().await.unwrap_or_else(|error| {
-            tracing::warn!(%error, "connections: the claim is unreadable; nobody counts as its claimant");
-            None
-        }),
-        _ => None,
-    };
-    let attribution = match device.id() {
-        Some(id) if claimant.as_deref() != Some(id) => {
-            pond_infra::sqlite_device_attribution::SqliteDeviceAttribution::new(
-                state.db.system.clone(),
-            )
-            .device_profile(id)
-            .await
-        }
-        _ => Ok(None),
-    };
-    may_change_connections(
-        false,
-        device.id(),
-        claimant.as_deref(),
-        &device.rung(attribution),
-    )
+) -> Result<(), AccessRefusal> {
+    let caller = crate::household_access::caller(state, principal, credential, headers).await;
+    may(&caller, Action::ChangeConnections)
 }
 
 /// The write routes' gate: `403 not_allowed`, logged with who asked and why not.
@@ -124,7 +96,7 @@ async fn require_changer(
             tracing::warn!(
                 kind = "connections_change_denied",
                 operation,
-                refusal = refusal.as_str(),
+                role = ?refusal.role,
                 caller = principal
                     .and_then(|p| p.device_id.as_deref())
                     .unwrap_or("none"),

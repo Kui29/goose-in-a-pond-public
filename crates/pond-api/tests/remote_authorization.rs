@@ -503,10 +503,12 @@ async fn removing_a_device_queues_its_remote_revocation_first() {
         failed: true.into(),
         devices: Default::default(),
     });
-    let router = h
-        .loopback
-        .clone()
-        .layer(axum::Extension(queue.clone() as Arc<dyn RemoteRevocation>));
+    // The desktop removes another phone as the dashboard, with the host credential.
+    let router = pond_api::test_support::as_dashboard(
+        h.loopback
+            .clone()
+            .layer(axum::Extension(queue.clone() as Arc<dyn RemoteRevocation>)),
+    );
     let remove = || {
         send(
             &router,

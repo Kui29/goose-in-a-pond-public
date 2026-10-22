@@ -319,7 +319,10 @@ async fn make_app() -> (axum::Router, tempfile::TempDir) {
         voice_samples: Default::default(),
     });
     (
-        build_router(state, std::path::PathBuf::from("pond-desktop/dist")),
+        pond_api::test_support::as_dashboard(build_router(
+            state,
+            std::path::PathBuf::from("pond-desktop/dist"),
+        )),
         tmp,
     )
 }

@@ -269,7 +269,10 @@ async fn pond_with_parts(
     });
 
     Fixture {
-        app: build_router(state.clone(), std::path::PathBuf::from("pond-desktop/dist")),
+        app: pond_api::test_support::as_dashboard(build_router(
+            state.clone(),
+            std::path::PathBuf::from("pond-desktop/dist"),
+        )),
         state,
         repo: model_repo,
         settings: settings_repo,

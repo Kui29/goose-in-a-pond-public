@@ -238,7 +238,10 @@ async fn make_app_full(
     });
 
     (
-        build_router(state, std::path::PathBuf::from("pond-desktop/dist")),
+        pond_api::test_support::as_dashboard(build_router(
+            state,
+            std::path::PathBuf::from("pond-desktop/dist"),
+        )),
         session_storage,
         tmp,
     )
@@ -532,7 +535,10 @@ async fn prompt_template_delete_system_returns_403() {
         voice_samples: Default::default(),
     });
 
-    let app = build_router(state, std::path::PathBuf::from("pond-desktop/dist"));
+    let app = pond_api::test_support::as_dashboard(build_router(
+        state,
+        std::path::PathBuf::from("pond-desktop/dist"),
+    ));
     let resp = app
         .oneshot(delete("/api/v1/prompts/balanced"))
         .await
@@ -1232,7 +1238,10 @@ async fn returns_501_when_repos_not_configured() {
         spoken_codes: Default::default(),
         voice_samples: Default::default(),
     });
-    let app = build_router(state, std::path::PathBuf::from("pond-desktop/dist"));
+    let app = pond_api::test_support::as_dashboard(build_router(
+        state,
+        std::path::PathBuf::from("pond-desktop/dist"),
+    ));
 
     for (method, uri) in &[
         (Method::GET, "/api/v1/prompts"),

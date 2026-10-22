@@ -12,6 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use pond_api::network::{is_tailnet, EmbeddedAddress};
+use pond_core::user_data::services::household_access::{may, Action};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -1633,7 +1634,26 @@ async fn remote_configuration(
         "lapsesAt": lapses_at,
     })))
 }
+/// `POST /remote-access/enrollment`: a phone's member must hold a role allowed outside the home.
 async fn register_phone(
+    runtime: State<Arc<Runtime>>,
+    peer: ConnectInfo<SocketAddr>,
+    handshake: axum::Extension<Arc<dyn pond_core::security::ports::handshake::Handshake>>,
+    axum::Extension(app): axum::Extension<Arc<pond_api::AppState>>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
+    headers: axum::http::HeaderMap,
+    registration: Json<Registration>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let principal = principal.as_ref().map(|axum::Extension(p)| p);
+    let household = pond_api::household_access::caller(&app, principal, None, &headers).await;
+    may(&household, Action::EnrollRemoteAccess).map_err(|refusal| {
+        let device = principal.and_then(|p| p.device_id.as_deref());
+        pond_api::household_access::refused(device, &refusal).into_response()
+    })?;
+    enroll(runtime, peer, handshake, headers, registration).await
+}
+
+async fn enroll(
     State(runtime): State<Arc<Runtime>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     axum::Extension(handshake): axum::Extension<
@@ -1882,6 +1902,7 @@ pub fn companion_management(runtime: Arc<Runtime>, state: Arc<pond_api::AppState
         // fallback, charging every unknown path to this 20-a-minute budget.
         .route_layer(axum::extract::DefaultBodyLimit::max(4096))
         .route_layer(axum::Extension(state.handshake.clone()))
+        .route_layer(axum::Extension(state.clone()))
         .route_layer(middleware::from_fn_with_state(
             state,
             pond_api::middleware::auth_middleware,
@@ -2713,7 +2734,7 @@ mod tests {
         handshake: &Arc<dyn pond_core::security::ports::handshake::Handshake>,
         headers: &axum::http::HeaderMap,
     ) -> Result<Json<serde_json::Value>, StatusCode> {
-        register_phone(
+        enroll(
             State(runtime.clone()),
             ConnectInfo("127.0.0.1:5555".parse().unwrap()),
             axum::Extension(handshake.clone()),
@@ -2726,6 +2747,59 @@ mod tests {
         )
         .await
         .map_err(|refused| refused.status())
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_belongs_to_no_one_is_refused_before_the_helper_is_asked() {
+        use pond_core::security::ports::handshake::{Handshake, HandshakeRequest};
+        use pond_core::security::ports::policy::Principal;
+        let pond_api::test_support::TestState {
+            mut state,
+            handshake,
+            dir: _dir,
+        } = pond_api::test_support::app_state().await;
+        state.skip_onboarding = true;
+        let code = handshake.issue_pairing_code_for(None).await.unwrap().code;
+        let token = handshake
+            .handshake(HandshakeRequest {
+                client_id: "phone000000000001".into(),
+                client_type: "gotg".into(),
+                client_version: "test".into(),
+                pairing_code: Some(code),
+            })
+            .await
+            .unwrap()
+            .session_token
+            .unwrap();
+        let caller = handshake.caller_for_token(&token).await.unwrap().unwrap();
+        let principal = Principal::token(caller.client_id).with_device(caller.device_id);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let refused = register_phone(
+            State(helper.runtime(data.path())),
+            ConnectInfo("192.168.1.20:1234".parse().unwrap()),
+            axum::Extension(handshake as Arc<dyn Handshake>),
+            axum::Extension(Arc::new(state)),
+            Some(axum::Extension(principal)),
+            headers,
+            Json(Registration {
+                auth_url: "https://coord.example/register/abcdefghijklmnop".into(),
+                node_key: format!("nodekey:{}", "b".repeat(64)),
+                machine_key: format!("mkey:{}", "a".repeat(64)),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(refused.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "role_required");
+        assert!(helper.calls().is_empty());
     }
 
     /// A removal while the helper is still enrolling the phone must find the record and queue the
@@ -3288,7 +3362,7 @@ mod tests {
             .to_string(),
         );
 
-        let refused = register_phone(
+        let refused = enroll(
             State(runtime),
             ConnectInfo("127.0.0.1:5555".parse().unwrap()),
             axum::Extension(handshake as Arc<dyn Handshake>),

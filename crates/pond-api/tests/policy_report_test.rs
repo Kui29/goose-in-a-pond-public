@@ -159,7 +159,10 @@ async fn make_app() -> (axum::Router, Arc<SqliteSessionStorage>, tempfile::TempD
     });
 
     (
-        build_router(state, std::path::PathBuf::from("pond-desktop/dist")),
+        pond_api::test_support::as_dashboard(build_router(
+            state,
+            std::path::PathBuf::from("pond-desktop/dist"),
+        )),
         session_storage,
         tmp,
     )

@@ -232,9 +232,15 @@ async fn a_paired_phone_chooses_the_chat_model_before_onboarding_and_can_then_fi
         "the phone can finish setup now: {done}"
     );
 
-    // After onboarding they behave as they always have.
+    // After onboarding the downloads behave as they always have; switching the model takes a
+    // household role, and this phone belongs to no one.
     for (method, path, body) in the_five() {
         let (status, answer) = send(&h.lan, method.clone(), &path, body, Some(&token)).await;
+        if path.ends_with("/activate") {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {answer}");
+            assert_eq!(answer["error"], "role_required");
+            continue;
+        }
         assert!(
             status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN,
             "{method} {path} after onboarding: {status} {answer}"

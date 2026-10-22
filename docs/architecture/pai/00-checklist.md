@@ -3655,8 +3655,9 @@ milestone).**
 - **PAI-2: two new write routes can take the pond off the network.** A join can move it to
   another LAN and forgetting the current network drops the link. They take a token in every state
   and never answer without one (`Exposure::Authenticated`, pinned); the handler then asks
-  `may_change_connections`: the host credential, the device that claimed the pond (so owner setup
-  can fix the network before any member is attributed), or a device attributed to a member.
+  `household_access::may` with `Action::ChangeConnections`: the host credential, the device that
+  claimed the pond (so owner setup can fix the network before any member is attributed), or a
+  device whose member is an owner, member or developer.
   Anyone else, a guest's phone, may read and gets `403 not_allowed`, logged as
   `connections_change_denied`; a failed attribution read refuses. Forgetting the network the pond
   is on needs `?confirm=true` (`409 in_use`), judged by both the saved profile and the live link.

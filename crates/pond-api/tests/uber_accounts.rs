@@ -486,7 +486,7 @@ async fn delete_member(p: &Pond) -> Value {
         Method::DELETE,
         &format!("/api/v1/profiles/{}", p.member),
         None,
-        false,
+        true,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
