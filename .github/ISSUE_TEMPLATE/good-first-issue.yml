@@ -1,0 +1,61 @@
+name: Good first issue (maintainers)
+description: A small, self-contained task for someone's first contribution.
+labels: [good first issue]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write it so a newcomer can finish it in one sitting without asking. They will start from
+        [the quick start](https://github.com/jarida-io/goose-in-a-pond/blob/main/docs/QUICKSTART.md).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Pond (server, voice, devices)
+        - Dashboard (pond-desktop)
+        - Phone app (Goose on the Go)
+        - Docs
+        - Swahili
+    validations:
+      required: true
+  - type: dropdown
+    id: time
+    attributes:
+      label: Time it should take
+      options:
+        - Under an hour
+        - An afternoon
+        - A day
+    validations:
+      required: true
+  - type: dropdown
+    id: access
+    attributes:
+      label: Needs access to the private llama.cpp fork
+      description: Any Rust change does; the dashboard, docs and Swahili text do not.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+  - type: textarea
+    id: task
+    attributes:
+      label: The task
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: The files or functions to start from.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: How to know it is done
+      description: The check or test that should pass, e.g. `bash scripts/giap.sh check desktop`.
+    validations:
+      required: true

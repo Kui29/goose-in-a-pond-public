@@ -63,7 +63,7 @@ pub fn compose(
     // Taken before presence is added: a request over the tailnet must never count as the
     // phone being at home. The middleware's LAN check says the same; this makes it structural.
     #[cfg(unix)]
-    let tailnet = embedded_network::private_companion(companion.clone());
+    let tailnet = embedded_network::private_companion(companion.clone(), embedded.clone());
     // Phones reach the Pond over HTTPS, so that is where a LAN sighting renews remote access.
     #[cfg(unix)]
     let companion = companion.layer(Extension(embedded.clone() as Arc<dyn DevicePresence>));

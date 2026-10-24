@@ -26,3 +26,15 @@ pub trait DevicePresence: Send + Sync {
     /// When this device's remote access lapses unless it returns to the LAN.
     async fn lapses_at(&self, device_id: &str) -> Result<Option<DateTime<Utc>>>;
 }
+
+/// The tailnet machine a request arrived from, named by the Pond's own network helper. Only the
+/// private tailnet listener sets it; it is never read from a client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailnetMachine(pub String);
+
+/// The machine each remotely enrolled device uses, so its token is refused from any other.
+#[async_trait]
+pub trait RemoteMachines: Send + Sync {
+    /// The machine key enrolled for `device_id`; `None` when it holds no active enrollment.
+    async fn machine_for(&self, device_id: &str) -> Result<Option<String>>;
+}

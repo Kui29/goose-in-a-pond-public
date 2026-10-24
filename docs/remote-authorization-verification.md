@@ -71,7 +71,9 @@ Jetson execution and physical phone roaming remain pending. The iPhone roaming
 check is explicitly deferred until a device is available. Simulator acceptance
 from the transport PR is not target hardware evidence for this branch.
 
-A stolen bearer still authorizes its recorded device. Already-open SSE sessions
+A stolen bearer still authorizes its recorded device from the household LAN. Over
+the tailnet it is now accepted only from the machine that device enrolled
+([auth-network posture](auth-network-posture.md)). Already-open SSE sessions
 are not rechecked on every event, and concurrent refresh/revoke races need a
 separate lifecycle change. A client whose session has expired must refresh it
 before authenticated server-side logout; clearing local credentials alone does

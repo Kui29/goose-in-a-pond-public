@@ -327,13 +327,14 @@ Start at the **[documentation index](./docs/README.md)**. The most used pages:
 ## Contributing
 
 Contributions are welcome from Rust developers, embedded systems engineers, AI/ML researchers, mobile
-developers and technical writers. Read the [Contributing Guide](./docs/CONTRIBUTING.md), then:
+developers and technical writers. New here? The [quick start](./docs/QUICKSTART.md) gets you to a
+first checked change in about ten minutes. Read the [Contributing Guide](./docs/CONTRIBUTING.md), then:
 
 1. Fork the repo and clone it with `--recursive`.
 2. Branch: `git checkout -b feat/your-feature`.
 3. Keep the hexagonal split: new capabilities go through a port in `pond-core`.
 4. Write the tests first against the port's mock (`cargo test -p pond-core`).
-5. Run `cargo fmt --check` and the clippy command from `ci.yml`.
+5. Run `bash scripts/giap.sh check`: the checks CI runs, for what your branch changes.
 6. Open a pull request.
 
 ---

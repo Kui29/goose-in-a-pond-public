@@ -13,6 +13,7 @@ bash scripts/giap.sh doctor   # health check; exits 1 on any FAIL
 
 | Page | For |
 |---|---|
+| [Quick start for contributors](QUICKSTART.md) | A first change, checked as CI checks it, in about ten minutes |
 | [Installation](developer/installation.md) | What `giap.sh install` does, prerequisites, troubleshooting |
 | [Contributing](CONTRIBUTING.md) | Branches, commits, comments, CI gates |
 | [Testing](testing/tdd_guide.md) | The test layers and when each is required |

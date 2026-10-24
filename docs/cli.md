@@ -49,6 +49,7 @@ interactive menu.
 | `models pairings` | Regenerate the vision pairing table from Hugging Face |
 | `wifi-grant [remove\|status]` | Linux: install, remove or report the polkit grant that lets the pond's user join Wi-Fi from the BLE setup channel (uses sudo) |
 | `provision --host HOST --key FILE [...]` | Operator machine: save a pond's printed setup card and give it a device certificate over SSH. Must be the first argument; runs `scripts/provision-device.sh` |
+| `check [AREA...] [--all\|--e2e\|--full\|--base REF\|--dry-run]` | The checks CI runs, for the areas this branch changes against `main` (`rust`, `desktop`, `go`, `shell`, `matter`, `music`), or the named ones. Reads the Rust crate lists from `ci.yml`; refuses Rust early without access to the private llama.cpp fork. Must be the first argument; `scripts/lib/local-checks.sh` |
 
 ### Options
 
@@ -82,6 +83,7 @@ The bash tests for the Node setup are `bash scripts/lib/node-setup.test.sh`.
 | `make deploy` | `bash scripts/jetson.sh deploy` |
 | `make docker-build` | `bash scripts/jetson.sh docker-build` (aarch64 CPU-only binary in a linux/arm64 container) |
 | `make test` | `SQLX_OFFLINE=true cargo test -p pond-core -p pond-api -p pond-infra` |
+| `make check` | `bash scripts/giap.sh check` |
 | `make fmt` | `cargo fmt` |
 | `make help` | List the targets |
 

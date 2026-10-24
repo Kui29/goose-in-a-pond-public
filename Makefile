@@ -19,7 +19,7 @@
 # either. Use `make deploy` below, which routes through the real deploy script.
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: install build ui server desktop doctor status deploy docker-build test fmt help
+.PHONY: install build ui server desktop doctor status deploy docker-build test check fmt help
 
 ## install       Install GIAP on this host (guardrailed; delegates to install.sh)
 install:
@@ -60,6 +60,10 @@ docker-build:
 ## test          Run the fast-crate test suite (mirrors ci.yml)
 test:
 	SQLX_OFFLINE=true cargo test -p pond-core -p pond-api -p pond-infra
+
+## check         Run the checks CI runs, for what this branch changes
+check:
+	bash scripts/giap.sh check
 
 ## fmt           Format the workspace
 fmt:

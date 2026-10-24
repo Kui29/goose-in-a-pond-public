@@ -12,6 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use pond_api::network::{is_tailnet, EmbeddedAddress};
+use pond_core::security::ports::remote_access::{RemoteMachines, TailnetMachine};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -35,6 +36,7 @@ mod recovery;
 mod revocation;
 
 const PEER_HEADER: &str = "x-pond-embedded-peer";
+const MACHINE_HEADER: &str = "x-pond-embedded-machine";
 
 /// Hosted coordinator for a household that names none. Applied on enable, never on read: an
 /// empty control URL is what marks a household local-only.
@@ -537,6 +539,8 @@ impl Runtime {
     /// without a check. True when the device was not recorded before.
     fn record_enrolled(&self, device: &str) -> Result<bool> {
         let _files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        // The enrollment may change the phone's machine; the next tailnet request asks again.
+        self.forget_machine(device)?;
         let mut record = revocation::load_enrolled(&self.directory);
         let inserted = record.devices.insert(device.to_owned());
         if inserted {
@@ -568,11 +572,42 @@ impl Runtime {
 
     fn forget_enrolled(&self, device: &str) -> Result<()> {
         let _files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        self.forget_machine(device)?;
         let mut record = revocation::load_enrolled(&self.directory);
         if record.devices.remove(device) {
             revocation::write_private_json(&self.directory, revocation::ENROLLED_FILE, &record)?;
         }
         Ok(())
+    }
+
+    /// Callers hold `files`.
+    fn forget_machine(&self, device: &str) -> Result<()> {
+        let mut known = revocation::load_machines(&self.directory)?;
+        if known.remove(device).is_some() {
+            revocation::write_private_json(&self.directory, revocation::MACHINES_FILE, &known)?;
+        }
+        Ok(())
+    }
+
+    /// Record the machine `device_id`'s phone enrolled, as the coordinator holds it.
+    pub fn remember_phone_machine(&self, device_id: &str, machine: &str) -> Result<()> {
+        self.remember_machine(&network_device(device_id)?, machine)
+    }
+
+    fn remember_machine(&self, device: &str, machine: &str) -> Result<()> {
+        let _files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        let mut known = revocation::load_machines(&self.directory)?;
+        known.insert(device.to_owned(), machine.to_owned());
+        ensure!(
+            known.len() <= revocation::MAX_DEVICES,
+            "machine record is full"
+        );
+        revocation::write_private_json(&self.directory, revocation::MACHINES_FILE, &known)
+    }
+
+    fn known_machine(&self, device: &str) -> Result<Option<String>> {
+        let _files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(revocation::load_machines(&self.directory)?.remove(device))
     }
 
     fn registration_payload(
@@ -1304,13 +1339,22 @@ async fn trusted_peer(mut request: Request, next: Next) -> Result<Response, Stat
         .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<SocketAddr>().ok()))
         .filter(|p| p.port() != 0 && is_tailnet(p.ip()))
         .ok_or(StatusCode::FORBIDDEN)?;
+    let machine = request
+        .headers_mut()
+        .remove(MACHINE_HEADER)
+        .and_then(|v| v.to_str().ok().map(str::to_owned))
+        .filter(|key| hex_key(key, "mkey:"))
+        .ok_or(StatusCode::FORBIDDEN)?;
     request.extensions_mut().insert(ConnectInfo(peer));
+    request.extensions_mut().insert(TailnetMachine(machine));
     Ok(next.run(request).await)
 }
 
 /// Only use on the private Unix socket. Public listeners ignore peer headers.
-pub fn private_companion(router: Router) -> Router {
-    router.layer(middleware::from_fn(trusted_peer))
+pub fn private_companion(router: Router, machines: Arc<dyn RemoteMachines>) -> Router {
+    router
+        .layer(axum::Extension(machines))
+        .layer(middleware::from_fn(trusted_peer))
 }
 
 /// Pending registration, with no authority or administration secret.
@@ -1694,6 +1738,7 @@ async fn register_phone(
                         tracing::warn!(%error, %device, "embedded enrollment superseded by a revocation");
                         return Err(StatusCode::CONFLICT.into_response());
                     }
+                    remember_enrolled_machine(&runtime, &device, &registration.machine_key);
                     return Ok(Json(existing));
                 }
                 PhoneEnrollment::StaleIdentity => {
@@ -1803,7 +1848,16 @@ async fn register_phone(
         return Err(StatusCode::CONFLICT.into_response());
     }
     tracing::info!(%device, "remote access: phone enrolled");
+    remember_enrolled_machine(&runtime, &device, &registration.machine_key);
     Ok(Json(enrolled))
+}
+
+/// The coordinator has just accepted this machine, so its first tailnet request need not ask.
+/// A failed write only costs that request one lookup.
+fn remember_enrolled_machine(runtime: &Runtime, device: &str, machine: &str) {
+    if let Err(error) = runtime.remember_machine(device, machine) {
+        tracing::warn!(%error, %device, "could not record the phone's machine; its first remote request will look it up");
+    }
 }
 /// What a phone enrolling from the home network asks the coordinator for, given the
 /// enrollment the coordinator already holds for its device.
@@ -1856,6 +1910,54 @@ fn phone_enrollment(existing: &serde_json::Value, machine_key: &str) -> PhoneEnr
         }
         _ => PhoneEnrollment::Enroll,
     }
+}
+
+#[async_trait::async_trait]
+impl RemoteMachines for Runtime {
+    /// The Pond's record, or the coordinator's the first time after a change. A pending
+    /// revocation, or no active enrollment, is no machine.
+    async fn machine_for(&self, device_id: &str) -> Result<Option<String>> {
+        let device = network_device(device_id)?;
+        if self.pending_revocations()?.contains_key(&device) {
+            return Ok(None);
+        }
+        if let Some(machine) = self.known_machine(&device)? {
+            return Ok(Some(machine));
+        }
+        // Held as enrollment holds it, so a lookup cannot record the machine an enrollment in
+        // flight is about to replace.
+        let lock = self.device_lock(&device);
+        let _held = lock.lock().await;
+        if let Some(machine) = self.known_machine(&device)? {
+            return Ok(Some(machine));
+        }
+        let record = match self
+            .authority(
+                "inspect",
+                serde_json::json!({"device": device, "role": "phone"}),
+            )
+            .await
+        {
+            Ok(record) => record,
+            Err(error) if refused_as(&error, "enrollment_missing") => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let field = |name: &str| record.get(name).and_then(serde_json::Value::as_str);
+        let Some(machine) = field("machineKey")
+            .filter(|key| field("status") == Some("active") && hex_key(key, "mkey:"))
+        else {
+            return Ok(None);
+        };
+        self.ensure_not_revoked_meanwhile(&device)?;
+        self.remember_machine(&device, machine)?;
+        Ok(Some(machine.to_owned()))
+    }
+}
+
+fn refused_as(error: &anyhow::Error, reason: &str) -> bool {
+    error
+        .downcast_ref::<RefusedByCoordinator>()
+        .is_some_and(|refused| refused.reason.as_deref() == Some(reason))
 }
 
 /// Companion enrollment uses the same bearer middleware and actual-peer LAN checks.
@@ -2400,17 +2502,23 @@ mod tests {
 
     #[tokio::test]
     async fn embedded_pairing_remains_remote_even_with_local_forwarding_headers() {
-        let router = private_companion(Router::new().route(
-            "/pair",
-            get(|peer: ConnectInfo<SocketAddr>| async move {
-                pond_api::network::require_lan(Some(peer)).map(|_| StatusCode::OK)
-            }),
-        ));
+        let data = tempfile::tempdir().unwrap();
+        let (runtime, _listener) = Runtime::new(data.path(), 4443).unwrap();
+        let router = private_companion(
+            Router::new().route(
+                "/pair",
+                get(|peer: ConnectInfo<SocketAddr>| async move {
+                    pond_api::network::require_lan(Some(peer)).map(|_| StatusCode::OK)
+                }),
+            ),
+            runtime,
+        );
         let response = router
             .oneshot(
                 Request::builder()
                     .uri("/pair")
                     .header(PEER_HEADER, "100.64.0.2:1234")
+                    .header(MACHINE_HEADER, format!("mkey:{}", "a".repeat(64)))
                     .header("x-forwarded-for", "127.0.0.1")
                     .body(Body::empty())
                     .unwrap(),
@@ -3379,5 +3487,76 @@ mod tests {
         // An unreadable record is not taken as a registration.
         std::fs::write(&record, b"not json").unwrap();
         assert_eq!(ask(runtime).await, false);
+    }
+
+    fn active_on(machine: &str) -> String {
+        serde_json::json!({"status": "active", "machineKey": machine, "role": "phone"}).to_string()
+    }
+
+    #[tokio::test]
+    async fn a_phones_machine_is_learned_from_the_coordinator_once_then_recorded() {
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let runtime = helper.runtime(data.path());
+        let machine = format!("mkey:{}", "a".repeat(64));
+        helper.answer("inspect", 0, &active_on(&machine));
+        assert_eq!(
+            runtime.machine_for("phone").await.unwrap(),
+            Some(machine.clone())
+        );
+        assert_eq!(runtime.machine_for("phone").await.unwrap(), Some(machine));
+        assert_eq!(helper.calls(), ["inspect"]);
+    }
+
+    #[tokio::test]
+    async fn enrolling_again_forgets_the_recorded_machine() {
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let runtime = helper.runtime(data.path());
+        runtime
+            .remember_phone_machine("phone", &format!("mkey:{}", "a".repeat(64)))
+            .unwrap();
+        runtime
+            .record_enrolled(&network_device("phone").unwrap())
+            .unwrap();
+        let replaced = format!("mkey:{}", "b".repeat(64));
+        helper.answer("inspect", 0, &active_on(&replaced));
+        assert_eq!(runtime.machine_for("phone").await.unwrap(), Some(replaced));
+    }
+
+    #[tokio::test]
+    async fn a_phone_without_an_active_enrollment_has_no_machine() {
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let runtime = helper.runtime(data.path());
+        helper.answer("inspect", 3, r#"{"refused":"enrollment_missing"}"#);
+        assert_eq!(runtime.machine_for("phone").await.unwrap(), None);
+        let revoked = serde_json::json!({"status": "revoked", "machineKey": format!("mkey:{}", "a".repeat(64))});
+        helper.answer("inspect", 0, &revoked.to_string());
+        assert_eq!(runtime.machine_for("phone").await.unwrap(), None);
+        // Neither answer is recorded: the next request asks again.
+        assert_eq!(helper.calls(), ["inspect", "inspect"]);
+    }
+
+    #[tokio::test]
+    async fn a_phone_awaiting_revocation_has_no_machine_whatever_was_recorded() {
+        use pond_core::security::ports::remote_access::RemoteRevocation;
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let runtime = helper.runtime(data.path());
+        runtime
+            .remember_phone_machine("phone", &format!("mkey:{}", "a".repeat(64)))
+            .unwrap();
+        runtime.queue("phone").await.unwrap();
+        assert_eq!(runtime.machine_for("phone").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_coordinator_is_an_error_not_a_machine() {
+        let helper = FakeHelper::new();
+        let data = tempfile::tempdir().unwrap();
+        let runtime = helper.runtime(data.path());
+        helper.answer("inspect", 1, "");
+        assert!(runtime.machine_for("phone").await.is_err());
     }
 }

@@ -1,0 +1,35 @@
+name: Feature request
+description: Something the Pond or the app should do that it does not.
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Pond (server, voice, devices)
+        - Dashboard (pond-desktop)
+        - Phone app (Goose on the Go)
+        - Docs
+        - Swahili
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: who-and-why
+    attributes:
+      label: Who needs it, and why
+      description: Who in the household, and what they are trying to do.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy
+      description: Does it send anything off the Pond, or show one person's data to another?

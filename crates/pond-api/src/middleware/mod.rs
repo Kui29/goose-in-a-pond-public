@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pond_core::security::ports::policy::Principal;
+use pond_core::security::ports::remote_access::{RemoteMachines, TailnetMachine};
 use pond_core::user_data::ports::onboarding::OnboardingRepository;
 use std::{
     collections::HashMap,
@@ -26,6 +27,10 @@ pub enum AuthError {
     RateLimitExceeded {
         retry_after_secs: u64,
     },
+    /// A tailnet request whose token belongs to a device enrolled on another machine.
+    WrongMachine,
+    /// The Pond could not learn which machine the token's device enrolled; retrying may work.
+    MachineUnverifiable,
 }
 
 impl IntoResponse for AuthError {
@@ -40,6 +45,14 @@ impl IntoResponse for AuthError {
             AuthError::RateLimitExceeded { .. } => {
                 (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded")
             }
+            AuthError::WrongMachine => (
+                StatusCode::FORBIDDEN,
+                "This token belongs to a device enrolled on another machine",
+            ),
+            AuthError::MachineUnverifiable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Could not confirm which machine this device enrolled; try again",
+            ),
         };
         let body =
             serde_json::json!({ "error": error_message, "status": status.as_u16() }).to_string();
@@ -543,13 +556,103 @@ pub async fn auth_middleware(
         }
     }
 
+    // Over the tailnet a token must come from the machine its device enrolled; otherwise a stolen
+    // token would work from any machine on the tailnet.
+    if let Some(TailnetMachine(machine)) = req.extensions().get::<TailnetMachine>().cloned() {
+        let machines = req.extensions().get::<Arc<dyn RemoteMachines>>().cloned();
+        enrolled_on(machines, &principal_device, &machine).await?;
+    }
+
     let mut req = req;
     req.extensions_mut().insert(principal);
     Ok(next.run(req).await)
 }
 
+/// Whether `device` enrolled `machine`. Refuses when the lookup is missing or fails.
+async fn enrolled_on(
+    machines: Option<Arc<dyn RemoteMachines>>,
+    device: &str,
+    machine: &str,
+) -> Result<(), AuthError> {
+    let machines = machines.ok_or(AuthError::MachineUnverifiable)?;
+    if device.is_empty() {
+        return Err(AuthError::WrongMachine);
+    }
+    match machines.machine_for(device).await {
+        Ok(Some(enrolled)) if enrolled == machine => Ok(()),
+        Ok(enrolled) => {
+            tracing::warn!(
+                kind = "remote_machine_mismatch",
+                device,
+                enrolled = enrolled.is_some(),
+                "refused a tailnet request: the token's device is not enrolled on this machine"
+            );
+            Err(AuthError::WrongMachine)
+        }
+        Err(error) => {
+            tracing::warn!(%error, device, "could not look up the machine a device enrolled");
+            Err(AuthError::MachineUnverifiable)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    mod tailnet_machine {
+        use super::super::{enrolled_on, AuthError};
+        use pond_core::security::ports::remote_access::RemoteMachines;
+        use std::sync::Arc;
+
+        const PHONE: &str = "mkey:aaaa";
+
+        struct Enrolled(anyhow::Result<Option<String>>);
+
+        #[async_trait::async_trait]
+        impl RemoteMachines for Enrolled {
+            async fn machine_for(&self, _: &str) -> anyhow::Result<Option<String>> {
+                match &self.0 {
+                    Ok(machine) => Ok(machine.clone()),
+                    Err(error) => Err(anyhow::anyhow!("{error}")),
+                }
+            }
+        }
+
+        fn lookup(answer: anyhow::Result<Option<String>>) -> Option<Arc<dyn RemoteMachines>> {
+            Some(Arc::new(Enrolled(answer)))
+        }
+
+        #[tokio::test]
+        async fn only_the_enrolled_machine_passes() {
+            assert!(enrolled_on(lookup(Ok(Some(PHONE.into()))), "phone", PHONE)
+                .await
+                .is_ok());
+            assert!(matches!(
+                enrolled_on(lookup(Ok(Some(PHONE.into()))), "phone", "mkey:bbbb").await,
+                Err(AuthError::WrongMachine)
+            ));
+            assert!(matches!(
+                enrolled_on(lookup(Ok(None)), "phone", PHONE).await,
+                Err(AuthError::WrongMachine)
+            ));
+        }
+
+        #[tokio::test]
+        async fn a_missing_device_lookup_or_answer_refuses() {
+            assert!(matches!(
+                enrolled_on(lookup(Ok(Some(PHONE.into()))), "", PHONE).await,
+                Err(AuthError::WrongMachine)
+            ));
+            assert!(matches!(
+                enrolled_on(None, "phone", PHONE).await,
+                Err(AuthError::MachineUnverifiable)
+            ));
+            assert!(matches!(
+                enrolled_on(lookup(Err(anyhow::anyhow!("offline"))), "phone", PHONE).await,
+                Err(AuthError::MachineUnverifiable)
+            ));
+        }
+    }
+
     #[test]
     fn a_sign_in_callbacks_code_is_not_logged() {
         let callback: axum::http::Uri = "/api/v1/oauth/callback?code=secret-code&state=s"

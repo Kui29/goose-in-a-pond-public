@@ -1,0 +1,52 @@
+name: Bug report
+description: Something the Pond, the dashboard or the phone app does wrong.
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Pond (server, voice, devices)
+        - Dashboard (pond-desktop)
+        - Phone app (Goose on the Go)
+        - Docs
+        - Swahili
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: "`git rev-parse --short HEAD`, or the version the dashboard shows."
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where the Pond runs
+      options:
+        - Jetson Orin Nano
+        - macOS
+        - Linux
+        - Not relevant
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Remove names, speech and anything personal first.
+      render: text
