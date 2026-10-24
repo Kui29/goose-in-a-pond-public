@@ -18,6 +18,8 @@ use std::{
 
 pub(super) const QUEUE_FILE: &str = "revocations.json";
 pub(super) const ENROLLED_FILE: &str = "enrolled.json";
+/// The machine key each enrolled phone uses, by network-hashed id; a cache of the coordinator's.
+pub(super) const MACHINES_FILE: &str = "machines.json";
 /// Queue and record both hold at most this many devices.
 pub(super) const MAX_DEVICES: usize = 256;
 /// Revocations attempted per 30-second tick.
@@ -164,6 +166,12 @@ pub(super) enum Plan {
     Revoke,
     VerifyThenRevoke,
     NothingToRevoke,
+}
+
+/// The machine cache. An unreadable one is an error rather than empty, so a tailnet request is
+/// refused, never let through on a guess.
+pub(super) fn load_machines(directory: &Path) -> Result<BTreeMap<String, String>> {
+    Ok(read_private_json(&directory.join(MACHINES_FILE), 65536)?.unwrap_or_default())
 }
 
 pub(super) fn plan(record: &Enrolled, device: &str) -> Plan {

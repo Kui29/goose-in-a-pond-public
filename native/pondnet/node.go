@@ -245,6 +245,22 @@ func PeerAddress(value string) (netip.AddrPort, error) {
 	return peer, nil
 }
 
+// MachineOf asks the tailnet which machine holds a peer address; see [MachineOf].
+func (n *Node) MachineOf(ctx context.Context, remoteAddr string) (string, error) {
+	lc, err := n.Server.LocalClient()
+	if err != nil {
+		return "", err
+	}
+	who, err := lc.WhoIs(ctx, remoteAddr)
+	if err != nil {
+		return "", err
+	}
+	if who.Node == nil || who.Node.Machine.IsZero() {
+		return "", errors.New("tailnet peer has no machine key")
+	}
+	return who.Node.Machine.String(), nil
+}
+
 // DialContext is implemented by tsnet and permits controlled transport tests.
 type DialContext func(context.Context, string, string) (net.Conn, error)
 

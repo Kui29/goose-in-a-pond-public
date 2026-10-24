@@ -116,6 +116,8 @@ func TestProxyKeepsTLSOpaqueAndCannotReplaceTrust(t *testing.T) {
 	}
 }
 
+var phoneMachine = "mkey:" + strings.Repeat("a", 64)
+
 func TestBridgeReplacesForgedPeerHeaders(t *testing.T) {
 	directory, err := os.MkdirTemp("", "pn-")
 	if err != nil {
@@ -131,6 +133,9 @@ func TestBridgeReplacesForgedPeerHeaders(t *testing.T) {
 		if r.Header.Get(PeerHeader) != "100.64.0.9:4567" {
 			t.Errorf("incorrect peer: %q", r.Header.Get(PeerHeader))
 		}
+		if r.Header.Get(MachineHeader) != phoneMachine {
+			t.Errorf("incorrect machine: %q", r.Header.Get(MachineHeader))
+		}
 		if r.Header.Get("Forwarded") != "" || r.Header.Get("X-Forwarded-For") != "" {
 			t.Error("untrusted forwarding header survived")
 		}
@@ -138,11 +143,17 @@ func TestBridgeReplacesForgedPeerHeaders(t *testing.T) {
 	})}
 	defer backend.Close()
 	go backend.Serve(listener)
-	handler := BridgeHandler(socket)
+	handler := BridgeHandler(socket, func(_ context.Context, addr string) (string, error) {
+		if addr != "100.64.0.9:4567" {
+			return "", errors.New("unknown peer")
+		}
+		return phoneMachine, nil
+	})
 	for _, source := range []string{"100.64.0.9:4567", "127.0.0.1:4567", "malformed"} {
 		r := httptest.NewRequest("GET", "/api/v1/health", nil)
 		r.RemoteAddr = source
 		r.Header.Set(PeerHeader, "127.0.0.1:1234")
+		r.Header.Set(MachineHeader, "mkey:"+strings.Repeat("f", 64))
 		r.Header.Set("Forwarded", "for=127.0.0.1")
 		r.Header.Set("X-Forwarded-For", "127.0.0.1")
 		w := httptest.NewRecorder()
@@ -164,6 +175,14 @@ func TestBridgeReplacesForgedPeerHeaders(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("%s reached the Pond: %d", target, w.Code)
 		}
+	}
+	// A tailnet peer the tailnet cannot name is refused before it reaches the Pond.
+	r := httptest.NewRequest("GET", "/api/v1/health", nil)
+	r.RemoteAddr = "100.64.0.10:4567"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unknown machine: %d", w.Code)
 	}
 }
 

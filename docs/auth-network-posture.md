@@ -15,7 +15,7 @@ Composed in `crates/pond-server/src/listeners.rs::compose`, bound in `main.rs::r
 |---|---|---|---|
 | Dashboard | `127.0.0.1`, default 4000 (`serve --port`), nine fallbacks | `pond_api::build_router` plus remote-access management, behind `host_guard::loopback_only` | desktop app, browser on the host, CLI, OAuth callbacks |
 | Companion | `0.0.0.0` (IPv4, every interface), default 4443 (`serve --https-port`), nine fallbacks, TLS | `pond_api::build_companion_router` plus phone enrollment; no static pages | phones on the LAN |
-| Tailnet | private Unix socket (`pond-net-*/api.sock`) the `pondnet` helper forwards to | the companion router, taken before presence is layered | phones away from home |
+| Tailnet | private Unix socket (`pond-net-*/api.sock`) the `pondnet` helper forwards to, naming each request's tailnet machine | the companion router, taken before presence is layered; a token is accepted only from its device's enrolled machine | phones away from home |
 | Plaintext dev | `0.0.0.0:4080`, debug builds with `POND_DEV_INSECURE_LAN=1` only | the companion router without enrollment or presence | Expo Go ([below](#the-plaintext-development-listener)) |
 
 Ports come from `crates/pond-server/src/ports.rs` (`bind_with_fallback` tries the base and the
@@ -149,6 +149,14 @@ record), if still unattributed, is attributed to `primary_profile_id`.
 - `GET /notifications/stream?device_id=` and `POST`/`DELETE /devices/{id}/push-token` require the
   target to be the caller's own device (`require_own_device`), else `403 device_mismatch` before
   any lookup. No IP binding: a session can roam and refresh remotely.
+- **Tailnet machine binding.** The `pondnet` bridge asks the tailnet which machine sent each request
+  (`WhoIs`) and forwards its machine key as `X-Pond-Embedded-Machine`, replacing any the client sent;
+  a peer it cannot name gets `503 embedded_peer_unknown`. `trusted_peer` refuses a tailnet request
+  without one. The auth middleware then accepts a token over the tailnet only from the machine its
+  device enrolled (`RemoteMachines::machine_for`), else `403`. The Pond records that machine when an
+  enrollment succeeds (`embedded-network/machines.json`), forgets it when the device enrolls again,
+  recovers or is revoked, and otherwise asks the coordinator (`inspect`) once; an unreachable
+  coordinator answers `503`, never lets the request through. LAN and loopback requests are unaffected.
 - **Presence lapse.** A device renews remote access by authenticating from a directly attached LAN
   peer on the companion listener (`DevicePresence::seen_on_lan`, written at most once an hour per
   device to `embedded-network/presence.json`). After `LAN_PRESENCE_WINDOW_DAYS` (30) without that,
@@ -159,7 +167,8 @@ record), if still unattributed, is attributed to `primary_profile_id`.
   [remote access](remote-access.md#disabling-removal-and-revocation).
 
 This is bearer authorization, not proof of possession of a device key. A stolen session acts as
-its device until expiry or revocation; an open SSE stream is not re-checked per event, though new
+its device on the household LAN until expiry or revocation; over the tailnet it works only from
+the device's enrolled machine; an open SSE stream is not re-checked per event, though new
 requests with a revoked token fail at once. Clearing a client's local credentials does not revoke
 anything on the server.
 
@@ -331,8 +340,10 @@ every ten minutes.
 
 ## Residual risks
 
-- A stolen bearer token works until expiry or revocation; refresh is possession-based with a
-  30-day window.
+- A stolen bearer token works from the household LAN until expiry or revocation; refresh is
+  possession-based with a 30-day window. Over the tailnet it works only from the enrolled machine.
+- A Pond host that also runs system Tailscale can receive tailnet traffic on the companion listener
+  directly, bypassing the bridge and its machine binding. Run remote access through `pondnet` only.
 - A compromised tailnet member can reach the public routes above.
 - Native Android and iOS pin the Pond's key; browsers do not. Source-masking proxies and subnet
   routers cannot establish that a pairing peer is local and are unsupported.

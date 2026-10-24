@@ -18,9 +18,18 @@ import (
 	"golang.org/x/net/netutil"
 )
 
-// PeerHeader is accepted only by the Pond's private Unix listener. Never trust
-// this header on an HTTP/TLS listener accessible by another machine.
-const PeerHeader = "X-Pond-Embedded-Peer"
+// PeerHeader and MachineHeader are accepted only by the Pond's private Unix listener. Never
+// trust them on an HTTP/TLS listener accessible by another machine.
+const (
+	PeerHeader    = "X-Pond-Embedded-Peer"
+	MachineHeader = "X-Pond-Embedded-Machine"
+)
+
+// MachineOf names the tailnet machine key at a peer address, so the Pond can refuse a phone's
+// token arriving from any other machine.
+type MachineOf func(ctx context.Context, remoteAddr string) (string, error)
+
+type machineKey struct{}
 
 // LoadCertificate reads the existing Pond identity without creating or changing
 // a key. Reloading on each handshake preserves Rust's certificate-renewal policy.
@@ -51,7 +60,7 @@ func LoadCertificate(path string) (*tls.Certificate, error) {
 
 // BridgeHandler forwards only companion API requests to a private Unix socket,
 // overwriting all peer metadata from the authenticated transport connection.
-func BridgeHandler(socket string) http.Handler {
+func BridgeHandler(socket string, machineOf MachineOf) http.Handler {
 	target := &url.URL{Scheme: "http", Host: "pond.internal"}
 	// The Pond answers every route's headers promptly, event streams included, so a
 	// socket that has not by then is stuck rather than slow.
@@ -68,6 +77,7 @@ func BridgeHandler(socket string) http.Handler {
 			request.Out.Header.Del("X-Forwarded-Host")
 			request.Out.Header.Del("X-Forwarded-Proto")
 			request.Out.Header.Set(PeerHeader, request.In.RemoteAddr)
+			request.Out.Header.Set(MachineHeader, request.In.Context().Value(machineKey{}).(string))
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			w.Header().Set("Content-Type", "application/json")
@@ -86,7 +96,15 @@ func BridgeHandler(socket string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		proxy.ServeHTTP(w, r)
+		// An unknown sender is refused: forwarding without its machine would skip the binding.
+		machine, err := machineOf(r.Context(), r.RemoteAddr)
+		if err != nil || machine == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, `{"error":"embedded_peer_unknown"}`)
+			return
+		}
+		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), machineKey{}, machine)))
 	})
 }
 
@@ -105,7 +123,7 @@ func ServePond(n *Node, port int, socket, identity string) (*http.Server, <-chan
 	}
 	config := &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"},
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return LoadCertificate(identity) }}
-	server := &http.Server{Handler: BridgeHandler(socket), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
+	server := &http.Server{Handler: BridgeHandler(socket, n.MachineOf), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 	finished := make(chan error, 1)
 	go func() {
 		finished <- server.Serve(tls.NewListener(netutil.LimitListener(listener, MaxConnections), config))

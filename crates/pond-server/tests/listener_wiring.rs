@@ -59,6 +59,8 @@ impl Handshake for PairedPhone {
 }
 
 const TOKEN: &str = "wiring-test-token";
+/// The machine the harness phone enrolled from; the tailnet bridge names it on each request.
+const PHONE_MACHINE: &str = "mkey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 struct Harness {
     listeners: Listeners,
@@ -83,6 +85,9 @@ async fn harness_with(insecure: Option<pond_api::insecure_dev::InsecureDevLan>) 
     #[cfg(unix)]
     let (embedded, _socket) =
         pond_server::embedded_network::Runtime::new(test.dir.path(), 4000).unwrap();
+    embedded
+        .remember_phone_machine("phone", PHONE_MACHINE)
+        .unwrap();
     let credential = pond_api::host_guard::HostCredential::generate();
     #[cfg(unix)]
     let presence = embedded.clone();
@@ -191,7 +196,9 @@ async fn the_embedded_socket_admits_only_forwarded_tailnet_peers() {
         let mut request =
             Request::get("/api/v1/health").header("Authorization", format!("Bearer {TOKEN}"));
         if let Some(peer) = peer {
-            request = request.header("x-pond-embedded-peer", peer);
+            request = request
+                .header("x-pond-embedded-peer", peer)
+                .header("x-pond-embedded-machine", PHONE_MACHINE);
         }
         request.body(Body::empty()).unwrap()
     };
@@ -217,6 +224,7 @@ async fn the_embedded_socket_admits_only_forwarded_tailnet_peers() {
         h.listeners.embedded.clone(),
         Request::get("/api/v1/remote-access")
             .header("x-pond-embedded-peer", "100.64.0.9:1234")
+            .header("x-pond-embedded-machine", PHONE_MACHINE)
             .header("Authorization", format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .unwrap(),
@@ -331,6 +339,7 @@ async fn health_reports_the_version_only_to_the_host() {
             h.listeners.embedded.clone(),
             Request::get("/api/v1/health")
                 .header("x-pond-embedded-peer", "100.64.0.9:1234")
+                .header("x-pond-embedded-machine", PHONE_MACHINE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -439,6 +448,50 @@ async fn system_info_tells_an_anonymous_caller_where_to_connect_and_nothing_more
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_token_over_the_tailnet_works_only_from_the_machine_its_phone_enrolled() {
+    let h = harness().await;
+    let devices = |machine: Option<&str>| {
+        let mut request = Request::get("/api/v1/devices")
+            .header("x-pond-embedded-peer", "100.64.0.9:1234")
+            .header("Authorization", format!("Bearer {TOKEN}"));
+        if let Some(machine) = machine {
+            request = request.header("x-pond-embedded-machine", machine);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+    let (status, body) = send(h.listeners.embedded.clone(), devices(Some(PHONE_MACHINE))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let another = format!("mkey:{}", "b".repeat(64));
+    let (status, body) = send(h.listeners.embedded.clone(), devices(Some(&another))).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a stolen token from another machine: {body}"
+    );
+
+    let (status, _) = send(h.listeners.embedded.clone(), devices(None)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the bridge always names the machine"
+    );
+
+    // The binding is a tailnet rule: the same token from the home LAN is unaffected.
+    let (status, body) = send(
+        h.listeners.companion.clone(),
+        Request::get("/api/v1/devices")
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("x-pond-embedded-machine", another.as_str())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn only_an_https_request_from_home_renews_remote_access() {
     // An authenticated route: public ones skip the middleware that records a sighting.
     let tailnet = harness().await;
@@ -446,6 +499,7 @@ async fn only_an_https_request_from_home_renews_remote_access() {
         tailnet.listeners.embedded.clone(),
         Request::get("/api/v1/devices")
             .header("x-pond-embedded-peer", "100.64.0.9:1234")
+            .header("x-pond-embedded-machine", PHONE_MACHINE)
             .header("Authorization", format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .unwrap(),
