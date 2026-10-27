@@ -13,6 +13,8 @@ pub enum TaskKind {
     Webhook { webhook_url: String },
     /// Fires on a matching bus event; never cron-registered, the rules engine calls `run_now`.
     SensorTrigger(SensorTriggerSpec),
+    /// A fixed list of device actions, run in order without the LLM.
+    Routine { actions: Vec<TriggerAction> },
 }
 
 impl TaskKind {
@@ -20,6 +22,44 @@ impl TaskKind {
     pub fn is_event_triggered(&self) -> bool {
         matches!(self, TaskKind::SensorTrigger(_))
     }
+}
+
+/// A routine's actions in one line: "kitchen-lights on, water-heater-plug on".
+pub fn routine_summary(actions: &[TriggerAction]) -> String {
+    actions
+        .iter()
+        .map(|a| match a {
+            TriggerAction::DevicePower { device_id, on } => {
+                format!("{device_id} {}", if *on { "on" } else { "off" })
+            }
+            TriggerAction::Notify { title, .. } => format!("notify \"{title}\""),
+            TriggerAction::AgentPrompt { .. } => "ask the assistant".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Why a routine can't be stored, or `None` when it can. An `agent_prompt` action needs the
+/// LLM, which is what a prompt schedule is for.
+pub fn routine_rejection(actions: &[TriggerAction]) -> Option<&'static str> {
+    if actions.is_empty() {
+        return Some("a routine needs at least one action");
+    }
+    actions
+        .iter()
+        .any(|a| matches!(a, TriggerAction::AgentPrompt { .. }))
+        .then_some("a routine runs without the assistant, so it cannot hold an agent_prompt action")
+}
+
+/// A run in which some actions failed. Carries every action's outcome, so the run keeps its
+/// result as well as its error; the scheduler downcasts an `anyhow::Error` to this.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{error}")]
+pub struct ActionsFailed {
+    /// Names what failed.
+    pub error: String,
+    /// Every action's outcome, in order.
+    pub outcomes: String,
 }
 
 /// Display-only `cron` sentinel for a one-shot (like `"@event"` for sensor rules); never parsed.
@@ -402,6 +442,40 @@ pub struct ScheduleResultEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_routine_round_trips() {
+        let kind = TaskKind::Routine {
+            actions: vec![TriggerAction::DevicePower {
+                device_id: "kitchen-lights".into(),
+                on: true,
+            }],
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert!(json.contains("\"type\":\"routine\""), "{json}");
+        assert_eq!(serde_json::from_str::<TaskKind>(&json).unwrap(), kind);
+    }
+
+    #[test]
+    fn a_routine_needs_actions_and_no_assistant() {
+        let lights = TriggerAction::DevicePower {
+            device_id: "kitchen-lights".into(),
+            on: true,
+        };
+        let note = TriggerAction::Notify {
+            title: "Morning".into(),
+            body: "Lights on".into(),
+        };
+        assert_eq!(routine_rejection(&[lights.clone(), note]), None);
+        assert!(routine_rejection(&[]).is_some());
+        assert!(routine_rejection(&[
+            lights,
+            TriggerAction::AgentPrompt {
+                prompt: "say good morning".into()
+            }
+        ])
+        .is_some());
+    }
 
     #[test]
     fn task_kind_serde_round_trip_agent() {

@@ -24,6 +24,7 @@ rules when matching events cross the event bus.
                          AgentPrompt   agent.chat() in session sched-{id}-{unix_ts}
                          Webhook       HTTP POST through the egress gate
                          SensorTrigger each of the rule's actions
+                         Routine       each device action in order, no agent
                                                  │
                        ScheduleResultEvent broadcast ──> SSE /api/v1/schedules/events
                                                     └──> push notifications
@@ -31,8 +32,8 @@ rules when matching events cross the event bus.
 
 ## Domain types (`pond-core/src/user_data/domain/schedule.rs`)
 
-- **`TaskKind`**: `AgentPrompt { prompt }`, `Webhook { webhook_url }`, or
-  `SensorTrigger(SensorTriggerSpec)`. `TaskKind::is_event_triggered()` is true for a sensor rule,
+- **`TaskKind`**: `AgentPrompt { prompt }`, `Webhook { webhook_url }`,
+  `SensorTrigger(SensorTriggerSpec)`, or `Routine { actions }`. `TaskKind::is_event_triggered()` is true for a sensor rule,
   which gets no timer; the rules engine fires it through `run_now`.
 - **`SensorTriggerSpec`**: `source` (`TriggerSource`: kind `Sensor` / `Camera` / `Device`, optional
   `device_id` and `signal`; unset fields match anything), `condition` (`TriggerCondition`: an
@@ -132,6 +133,11 @@ text is spoken.
    - **Webhook**: `POST` to the URL, checked and recorded by the egress gate
      (`EgressPurpose::Schedules`); a non-2xx status fails the run.
    - **SensorTrigger**: runs every action; the run fails only when no action succeeded.
+   - **Routine**: runs every action in order through device control, never the agent, and
+     carries on past a failed one. The run fails if any action failed: its error names what did
+     not run (`did not run: water-heater-plug`) and its result still lists every action's
+     outcome (`ActionsFailed`, which `run_outcome` unpacks). The store refuses a routine with no
+     actions or with an `agent_prompt` action (`routine_rejection`), on create and on update.
 5. `JsonRunHistory::record_finish()` records the result or error and duration, and a
    `Completed` / `Failed` event is broadcast.
 6. The task is marked not running.

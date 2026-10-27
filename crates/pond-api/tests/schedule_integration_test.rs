@@ -344,6 +344,16 @@ fn auth_post(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+fn auth_put(uri: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("Authorization", "Bearer test-token")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
 fn auth_delete(uri: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
@@ -805,4 +815,79 @@ async fn upcoming_returns_active_schedules() {
             .any(|t| t.get("id").and_then(|v| v.as_str()) == Some("upcoming-task")),
         "upcoming task not found: {tasks:?}"
     );
+}
+
+fn morning_routine(devices: &[&str]) -> serde_json::Value {
+    let actions: Vec<_> = devices
+        .iter()
+        .map(|d| serde_json::json!({"type": "device_power", "device_id": d, "on": true}))
+        .collect();
+    serde_json::json!({"type": "routine", "actions": actions})
+}
+
+#[tokio::test]
+async fn a_routines_actions_are_created_and_replaced_through_the_api() {
+    let (app, _tmp) = make_app().await;
+    let created = app
+        .clone()
+        .oneshot(auth_post(
+            "/api/v1/schedules",
+            serde_json::json!({
+                "id": "morning",
+                "name": "Morning",
+                "cron": "0 30 6 * * *",
+                "kind": morning_routine(&["kitchen-lights"]),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let edited = app
+        .clone()
+        .oneshot(auth_put(
+            "/api/v1/schedules/morning",
+            serde_json::json!({"kind": morning_routine(&["kitchen-lights", "water-heater-plug"])}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(edited).await["kind"],
+        morning_routine(&["kitchen-lights", "water-heater-plug"])
+    );
+}
+
+#[tokio::test]
+async fn a_routine_with_no_actions_or_an_assistant_prompt_is_a_bad_request() {
+    let (app, _tmp) = make_app().await;
+    let empty = serde_json::json!({"type": "routine", "actions": []});
+    let with_prompt = serde_json::json!({
+        "type": "routine",
+        "actions": [{"type": "agent_prompt", "prompt": "say good morning"}],
+    });
+    app.clone()
+        .oneshot(auth_post(
+            "/api/v1/schedules",
+            serde_json::json!({
+                "id": "morning",
+                "name": "Morning",
+                "cron": "0 30 6 * * *",
+                "kind": morning_routine(&["kitchen-lights"]),
+            }),
+        ))
+        .await
+        .unwrap();
+
+    for kind in [empty, with_prompt] {
+        let put = app
+            .clone()
+            .oneshot(auth_put(
+                "/api/v1/schedules/morning",
+                serde_json::json!({"kind": kind}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::BAD_REQUEST, "{kind}");
+    }
 }

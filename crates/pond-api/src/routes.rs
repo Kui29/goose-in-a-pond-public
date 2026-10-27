@@ -36,7 +36,7 @@ use pond_core::shared::services::chat::ChatService;
 use pond_core::user_data::domain::onboarding::OnboardingStep;
 use pond_core::user_data::domain::profile::CreateProfileRequest;
 use pond_core::user_data::domain::schedule::{
-    OneShotTimePassed, Schedule, SensorTriggerSpec, TaskKind,
+    routine_rejection, OneShotTimePassed, Schedule, SensorTriggerSpec, TaskKind,
 };
 use pond_core::user_data::domain::sensor::SensorReading;
 use pond_core::user_data::domain::session::{IdentificationSource, SessionIdentity};
@@ -10429,7 +10429,23 @@ async fn update_schedule(
         }
     };
 
-    let kind = api_req.prompt.map(|p| TaskKind::AgentPrompt { prompt: p });
+    // Refused here, not by the store, so a 404 still means only that there is no such task.
+    match &api_req.kind {
+        Some(TaskKind::SensorTrigger(spec)) => {
+            if let Some((status, body)) = rule_spec_rejection(spec) {
+                return (status, Json(body));
+            }
+        }
+        Some(TaskKind::Routine { actions }) => {
+            if let Some(why) = routine_rejection(actions) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": why})));
+            }
+        }
+        _ => {}
+    }
+    let kind = api_req
+        .kind
+        .or_else(|| api_req.prompt.map(|p| TaskKind::AgentPrompt { prompt: p }));
 
     let req = UpdateScheduleRequest {
         label: api_req.name,
@@ -10453,6 +10469,8 @@ struct ApiUpdateScheduleRequest {
     cron: Option<String>,
     timezone: Option<String>,
     prompt: Option<String>,
+    /// Replaces the task's kind, such as a routine's actions; wins over `prompt`.
+    kind: Option<TaskKind>,
     /// Fire once at this instant instead of recurring.
     #[serde(default)]
     fire_at: Option<chrono::DateTime<chrono::Utc>>,

@@ -1,7 +1,9 @@
 //! Schedule MCP server: cron tasks, one-shot timers and world clock. Sensor rules live in
 //! `giap-sensors`; `sensor_rule_summary` stays here because `list_schedules` renders them too.
 
-use pond_core::user_data::domain::schedule::{SensorTriggerSpec, TaskKind, TriggerSourceKind};
+use pond_core::user_data::domain::schedule::{
+    routine_summary, SensorTriggerSpec, TaskKind, TriggerSourceKind,
+};
 use pond_core::user_data::ports::scheduler::{
     CreateScheduleRequest, SchedulerPort, UpdateScheduleRequest,
 };
@@ -225,6 +227,7 @@ impl ScheduleMcpServer {
                                 TaskKind::AgentPrompt { .. } => "agent",
                                 TaskKind::Webhook { .. } => "webhook",
                                 TaskKind::SensorTrigger(_) => "sensor-rule",
+                                TaskKind::Routine { .. } => "routine",
                             };
                             let status = if t.currently_running {
                                 "running"
@@ -248,11 +251,13 @@ impl ScheduleMcpServer {
                             TaskKind::AgentPrompt { .. } => "agent",
                             TaskKind::Webhook { .. } => "webhook",
                             TaskKind::SensorTrigger(_) => "sensor-rule",
+                            TaskKind::Routine { .. } => "routine",
                         };
                         let prompt_preview = match &t.kind {
                             TaskKind::AgentPrompt { prompt } => prompt.clone(),
                             TaskKind::Webhook { webhook_url } => webhook_url.clone(),
                             TaskKind::SensorTrigger(spec) => sensor_rule_summary(spec),
+                            TaskKind::Routine { actions } => routine_summary(actions),
                         };
                         let status = if t.currently_running {
                             "running"
@@ -608,6 +613,7 @@ One-shot timer or reminder: fires ONCE after a delay, then deletes itself \
                         }
                         TaskKind::Webhook { webhook_url } => format!("webhook: {webhook_url}"),
                         TaskKind::SensorTrigger(spec) => sensor_rule_summary(spec),
+                        TaskKind::Routine { actions } => routine_summary(actions),
                     };
                     Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Schedule updated: \"{}\" [{}] — {} {} ({})",
@@ -996,6 +1002,7 @@ pub async fn try_upcoming_schedules_context(scheduler: &dyn SchedulerPort) -> Op
                 TaskKind::SensorTrigger(spec) => {
                     format!("rule: {}", sensor_rule_summary(spec))
                 }
+                TaskKind::Routine { actions } => format!("routine: {}", routine_summary(actions)),
             };
             format!(
                 "- \"{}\" — {} {} ({})",

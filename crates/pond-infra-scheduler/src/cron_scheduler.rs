@@ -5,7 +5,8 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use pond_core::user_data::domain::schedule::{
-    OneShotTimePassed, RunStatus, Schedule, ScheduleRun, TaskKind, CRON_ONCE,
+    routine_rejection, ActionsFailed, OneShotTimePassed, RunStatus, Schedule, ScheduleRun,
+    TaskKind, CRON_ONCE,
 };
 use pond_core::user_data::ports::schedule_execution::ScheduleExecutor;
 use pond_core::user_data::ports::scheduler::{
@@ -517,11 +518,29 @@ impl RecurringJob {
 
 /// Refuses a kind the scheduler must not store; every create and update passes here.
 fn validate_kind(kind: &TaskKind) -> Result<()> {
-    if let TaskKind::SensorTrigger(spec) = kind {
-        spec.validate()
-            .map_err(|rejected| anyhow::anyhow!("{rejected}"))?;
+    match kind {
+        TaskKind::SensorTrigger(spec) => spec
+            .validate()
+            .map_err(|rejected| anyhow::anyhow!("{rejected}")),
+        TaskKind::Routine { actions } => match routine_rejection(actions) {
+            Some(why) => anyhow::bail!("{why}"),
+            None => Ok(()),
+        },
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// A run's status, result and error. A partly failed routine keeps every outcome as its result.
+fn run_outcome(result: &Result<String>) -> (RunStatus, Option<String>, Option<String>) {
+    match result {
+        Ok(text) => (RunStatus::Completed, Some(text.clone()), None),
+        Err(e) => (
+            RunStatus::Failed,
+            e.downcast_ref::<ActionsFailed>()
+                .map(|failed| failed.outcomes.clone()),
+            Some(e.to_string()),
+        ),
+    }
 }
 
 /// Whether a fire alone is worth a file rewrite: only cooldown rules read the stamp back, and
@@ -907,21 +926,18 @@ impl SchedulerPort for CronSchedulerAdapter {
             let result = executor.execute(&id, &kind).await;
             let duration_ms = start.elapsed().as_millis() as u64;
 
-            let (status, result_text, error_text) = match &result {
-                Ok(text) => {
-                    run_history
-                        .record_finish(&run_id, RunStatus::Completed, Some(text.clone()), None)
-                        .await;
-                    (RunStatus::Completed, Some(text.clone()), None)
-                }
-                Err(e) => {
-                    tracing::error!("run_now task {id} failed: {e}");
-                    run_history
-                        .record_finish(&run_id, RunStatus::Failed, None, Some(e.to_string()))
-                        .await;
-                    (RunStatus::Failed, None, Some(e.to_string()))
-                }
-            };
+            if let Err(e) = &result {
+                tracing::error!("run_now task {id} failed: {e}");
+            }
+            let (status, result_text, error_text) = run_outcome(&result);
+            run_history
+                .record_finish(
+                    &run_id,
+                    status.clone(),
+                    result_text.clone(),
+                    error_text.clone(),
+                )
+                .await;
 
             if let Some(tx) = &result_tx {
                 let _ = tx.send(ScheduleResultEvent {
@@ -1080,6 +1096,7 @@ impl Drop for CronSchedulerAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pond_core::user_data::domain::schedule::TriggerAction;
     use pond_core::user_data::ports::schedule_execution::ScheduleExecutor;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1956,6 +1973,111 @@ mod tests {
         assert_eq!(sched.list_tasks().await.unwrap().len(), 1);
     }
 
+    fn routine_req(id: &str, actions: Vec<TriggerAction>) -> CreateScheduleRequest {
+        CreateScheduleRequest {
+            kind: TaskKind::Routine { actions },
+            ..create_req(id, "0 30 6 * * *")
+        }
+    }
+
+    fn lights_on() -> TriggerAction {
+        TriggerAction::DevicePower {
+            device_id: "kitchen-lights".into(),
+            on: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_routine_without_actions_or_with_the_assistant_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sched = make_scheduler(tmp.path()).await;
+        sched
+            .create_task(routine_req("morning", vec![lights_on()]))
+            .await
+            .unwrap();
+
+        for bad in [
+            vec![],
+            vec![
+                lights_on(),
+                TriggerAction::AgentPrompt {
+                    prompt: "say good morning".into(),
+                },
+            ],
+        ] {
+            assert!(sched
+                .create_task(routine_req("bad", bad.clone()))
+                .await
+                .is_err());
+            assert!(sched
+                .update_task(
+                    "morning",
+                    UpdateScheduleRequest {
+                        kind: Some(TaskKind::Routine { actions: bad }),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_err());
+        }
+        let tasks = sched.list_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0].kind,
+            TaskKind::Routine {
+                actions: vec![lights_on()]
+            }
+        );
+    }
+
+    /// Fails as a routine does when one of its devices did not answer.
+    struct PartlyFailing;
+
+    #[async_trait]
+    impl ScheduleExecutor for PartlyFailing {
+        async fn execute(&self, _id: &str, _kind: &TaskKind) -> Result<String> {
+            Err(ActionsFailed {
+                error: "did not run: water-heater-plug".into(),
+                outcomes: "kitchen-lights switched on · water-heater-plug failed: offline".into(),
+            }
+            .into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_partly_failed_run_keeps_every_outcome_and_names_what_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sched = CronSchedulerAdapter::new(
+            tmp.path().join("schedules.json"),
+            tmp.path().join("schedule_runs.json"),
+            Arc::new(PartlyFailing),
+        )
+        .await
+        .unwrap();
+        sched
+            .create_task(routine_req("morning", vec![lights_on()]))
+            .await
+            .unwrap();
+
+        sched.run_now("morning").await.unwrap();
+        let mut runs = Vec::new();
+        for _ in 0..50 {
+            runs = sched.get_runs("morning", 1).await.unwrap();
+            if runs.first().is_some_and(|r| r.status != RunStatus::Running) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let run = &runs[0];
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.error.as_deref(), Some("did not run: water-heater-plug"));
+        assert!(run
+            .result
+            .as_deref()
+            .unwrap()
+            .contains("kitchen-lights switched on"));
+    }
+
     #[tokio::test]
     async fn an_update_cannot_smuggle_in_a_rule_that_can_never_fire() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2305,21 +2427,18 @@ impl TaskRunContext {
         let result = executor.execute(&id, &kind).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        let (status, result_text, error_text) = match &result {
-            Ok(text) => {
-                run_history
-                    .record_finish(&run_id, RunStatus::Completed, Some(text.clone()), None)
-                    .await;
-                (RunStatus::Completed, Some(text.clone()), None)
-            }
-            Err(e) => {
-                tracing::error!("Scheduled task {id} failed: {e}");
-                run_history
-                    .record_finish(&run_id, RunStatus::Failed, None, Some(e.to_string()))
-                    .await;
-                (RunStatus::Failed, None, Some(e.to_string()))
-            }
-        };
+        if let Err(e) = &result {
+            tracing::error!("Scheduled task {id} failed: {e}");
+        }
+        let (status, result_text, error_text) = run_outcome(&result);
+        run_history
+            .record_finish(
+                &run_id,
+                status.clone(),
+                result_text.clone(),
+                error_text.clone(),
+            )
+            .await;
 
         // Broadcast result event (for SSE / desktop notifications)
         if let Some(tx) = &result_tx {
