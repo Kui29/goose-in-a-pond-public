@@ -228,6 +228,8 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 indoc      = { workspace = true }
 futures    = { workspace = true }
+llama-cpp-sys-2 = { workspace = true }
+whisper-rs-sys  = "0.15"
 
 # getuid(), so the voice lock is per-user rather than per-machine.
 [target.'cfg(unix)'.dependencies]

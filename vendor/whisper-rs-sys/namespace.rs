@@ -1,5 +1,7 @@
-//! Linux static-link isolation for the pinned Whisper copy of GGML.
+//! Static-link isolation for the pinned Whisper copy of GGML.
 use std::{collections::BTreeSet, fs, path::Path};
+
+pub const PREFIX: &str = "pond_whisper_";
 
 fn owned(name: &str) -> bool {
     name == "ggml"
@@ -24,7 +26,7 @@ fn collect(path: &Path, names: &mut BTreeSet<String>) -> std::io::Result<()> {
         }
     } else if matches!(
         path.extension().and_then(|x| x.to_str()),
-        Some("h" | "hpp" | "c" | "cpp" | "cu" | "cuh" | "inc")
+        Some("h" | "hpp" | "c" | "cpp" | "m" | "cu" | "cuh" | "inc")
     ) {
         let source = fs::read_to_string(path)?;
         for token in source.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
@@ -43,7 +45,7 @@ pub fn header(source: &Path, destination: &Path) -> std::io::Result<()> {
     let mut output =
         String::from("/* Private Whisper GGML namespace. Generated from pinned sources. */\n");
     for name in names {
-        output.push_str(&format!("#define {name} pond_whisper_{name}\n"));
+        output.push_str(&format!("#define {name} {PREFIX}{name}\n"));
     }
     // Every native file includes this header, so rewriting it unchanged would recompile all
     // of them whenever the build script reruns.
@@ -52,13 +54,17 @@ pub fn header(source: &Path, destination: &Path) -> std::io::Result<()> {
     }
     fs::write(destination, output)
 }
+/// Bindgen writes these link names verbatim, so `symbol_prefix` is the platform's own
+/// (`_` on Mach-O).
 #[derive(Debug)]
-pub struct Bindings;
+pub struct Bindings {
+    pub symbol_prefix: &'static str,
+}
 impl bindgen::callbacks::ParseCallbacks for Bindings {
     fn generated_link_name_override(
         &self,
         item: bindgen::callbacks::ItemInfo<'_>,
     ) -> Option<String> {
-        owned(item.name).then(|| format!("pond_whisper_{}", item.name))
+        owned(item.name).then(|| format!("{}{PREFIX}{}", self.symbol_prefix, item.name))
     }
 }
