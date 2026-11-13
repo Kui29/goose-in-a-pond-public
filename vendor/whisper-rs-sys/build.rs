@@ -106,7 +106,7 @@ fn main() {
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let whisper_root = out.join("whisper.cpp");
-    let isolated = target.contains("linux");
+    let isolated = target.contains("linux") || target.contains("apple");
     let namespace_header = out.join("pond-whisper-namespace.h");
     if isolated {
         namespace::header(std::path::Path::new("whisper.cpp"), &namespace_header)
@@ -125,7 +125,7 @@ fn main() {
     });
 
     if isolated && env::var("WHISPER_DONT_GENERATE_BINDINGS").is_ok() {
-        panic!("Linux GGML isolation requires generated bindings; unset WHISPER_DONT_GENERATE_BINDINGS");
+        panic!("GGML isolation requires generated bindings; unset WHISPER_DONT_GENERATE_BINDINGS");
     }
     if env::var("WHISPER_DONT_GENERATE_BINDINGS").is_ok() {
         let _: u64 = std::fs::copy("src/bindings.rs", out.join("bindings.rs"))
@@ -162,7 +162,8 @@ fn main() {
         }
 
         if isolated {
-            bindings = bindings.parse_callbacks(Box::new(namespace::Bindings));
+            let symbol_prefix = if target.contains("apple") { "_" } else { "" };
+            bindings = bindings.parse_callbacks(Box::new(namespace::Bindings { symbol_prefix }));
         }
         let bindings = bindings
             .clang_arg("-I./whisper.cpp/")
@@ -179,7 +180,7 @@ fn main() {
             }
             Err(e) => {
                 if isolated {
-                    panic!("Linux GGML isolation requires generated bindings: {e}");
+                    panic!("GGML isolation requires generated bindings: {e}");
                 }
                 println!("cargo:warning=Unable to generate bindings: {}", e);
                 println!("cargo:warning=Using bundled bindings.rs, which may be out of date");
@@ -212,6 +213,7 @@ fn main() {
         config.cxxflag(format!("-include{}", namespace_header.display()));
         // Dynamic backend lookup uses public symbol names; this build embeds each backend.
         config.define("GGML_BACKEND_DL", "OFF");
+        config.define("GGML_METALLIB_SYMBOL_PREFIX", namespace::PREFIX);
     }
     if cfg!(target_os = "windows") {
         config.cxxflag("/utf-8");
