@@ -1,11 +1,13 @@
 # Private Cargo dependency access in CI
 
-The Rust job fetches the private `jarida-io/llama-cpp-rs-giap` dependency before
-building. A repository or organization Actions secret named `CARGO_GITHUB_TOKEN`
-must hold a fine-grained token with read-only Contents access to that repository.
-The default `GITHUB_TOKEN` cannot read a different private repository.
-Both Rust and live-test jobs also accept the existing `GIAP_PRIVATE_FORK_TOKEN`
-name as a fallback; new configuration should use `CARGO_GITHUB_TOKEN`.
+The Rust job fetches the `jarida-io/llama-cpp-rs-giap` dependency before building.
+That repository is public, so the fetch needs no credential. If it is made private,
+a repository or organization Actions secret named `CARGO_GITHUB_TOKEN` must hold a
+fine-grained token with read-only Contents access to it; the default `GITHUB_TOKEN`
+cannot read a different private repository, and the fetch step names the missing
+secret when it fails without one. Both Rust and live-test jobs also accept the
+existing `GIAP_PRIVATE_FORK_TOKEN` name as a fallback; new configuration should use
+`CARGO_GITHUB_TOKEN`.
 
 The credential is available only to the fetch step. `git-askpass.sh` answers
 only prompts for that exact HTTPS repository path; it fails closed for other
