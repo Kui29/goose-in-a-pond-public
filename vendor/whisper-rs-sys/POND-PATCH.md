@@ -21,9 +21,18 @@ the upstream build behavior.
 Changes from the published crate: this note, `namespace.rs`, build-script wiring,
 a standalone Cargo workspace declaration, the upstream Unlicense text
 (restored from the whisper-rs repository because the published crate omitted it),
-and five native source changes, below.
+and six native source changes, below.
 When updating Whisper, regenerate and inspect the linked symbol inventory and run
 both GPU transcription and inference in the same production process before shipping.
+
+## Native source change: the embedded Metal library's symbols
+
+`whisper.cpp/ggml/src/ggml-metal/CMakeLists.txt` names the assembly symbols that bracket the
+embedded shader source `_${GGML_METALLIB_SYMBOL_PREFIX}ggml_metallib_start` and `_end`.
+This is Pond's own change. The forced include renames the C side's references, but the
+generated `.s` file is not preprocessed, so without the prefix Whisper's Metal backend would
+look for symbols nothing defines, or find llama.cpp's and compile llama.cpp's shaders. The
+variable is empty unless `build.rs` sets it, which leaves the upstream names.
 
 ## Native source change: graph buffer reservation failure
 
