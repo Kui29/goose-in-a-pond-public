@@ -176,11 +176,12 @@ jobs:
           GIT_CONFIG_KEY_1: credential.helper
           GIT_CONFIG_VALUE_1: ''
         run: |
-          if [ -z "$CARGO_GITHUB_TOKEN" ]; then
-            echo '::error::CARGO_GITHUB_TOKEN is required with read-only Contents access to jarida-io/llama-cpp-rs-giap. See scripts/ci/README.md.'
+          if ! cargo fetch --locked; then
+            if [ -z "$CARGO_GITHUB_TOKEN" ]; then
+              echo '::error::cargo fetch failed with no CARGO_GITHUB_TOKEN; set it if jarida-io/llama-cpp-rs-giap is private. See scripts/ci/README.md.'
+            fi
             exit 1
           fi
-          cargo fetch --locked
 
       - name: cargo fmt
         run: cargo fmt --check
@@ -857,11 +858,12 @@ jobs:
           GIT_CONFIG_KEY_1: credential.helper
           GIT_CONFIG_VALUE_1: ''
         run: |
-          if [ -z "$CARGO_GITHUB_TOKEN" ]; then
-            echo '::error::CARGO_GITHUB_TOKEN is required with read-only Contents access to jarida-io/llama-cpp-rs-giap. See scripts/ci/README.md.'
+          if ! cargo fetch --locked; then
+            if [ -z "$CARGO_GITHUB_TOKEN" ]; then
+              echo '::error::cargo fetch failed with no CARGO_GITHUB_TOKEN; set it if jarida-io/llama-cpp-rs-giap is private. See scripts/ci/README.md.'
+            fi
             exit 1
           fi
-          cargo fetch --locked
 
       # live-test.sh drives the dashboard the server actually serves when asked
       # for --ui; without Node it still runs every HTTP assertion.
